@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Value = i64;
+
 const Ops = enum(u32) {
     PUSHX0 = 0xf81f0fe0, // str x0, [sp, #-16]!
     PUSHX1 = 0xf81f0fe1, // str x1, [sp, #-16]!
@@ -86,7 +88,7 @@ const Parser = struct {
     pos: usize,
 
     const Token = union(enum) {
-        Number: i64,
+        Number: Value,
         Word: []const u8,
     };
 
@@ -118,7 +120,7 @@ const Parser = struct {
             while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
                 self.pos += 1;
             }
-            return Token{ .Number = std.fmt.parseInt(i64, self.code[start..self.pos], 10) catch 2137 };
+            return Token{ .Number = std.fmt.parseInt(Value, self.code[start..self.pos], 10) catch 2137 };
         }
         while (self.pos < self.code.len and !isWhitespace(self.code[self.pos])) {
             self.pos += 1;
@@ -266,7 +268,7 @@ const Compiler = struct {
     }
 };
 
-fn jitRun(code: []u32) !i64 {
+fn jitRun(code: []u32) !Value {
     // allocate executable memory with mmap
     var mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
 
@@ -279,11 +281,11 @@ fn jitRun(code: []u32) !i64 {
     try std.os.mprotect(mem, std.os.PROT.READ | std.os.PROT.EXEC);
 
     // cast the memory to a function pointer and call
-    var fun: *const fn () i64 = @ptrCast(mem);
+    var fun: *const fn () Value = @ptrCast(mem);
     return fun();
 }
 
-fn run(src: []const u8) !i64 {
+fn run(src: []const u8) !Value {
     var parser = Parser.init(src);
     var compiler = Compiler.init(&parser);
     var code = compiler.compile();
@@ -298,7 +300,7 @@ fn run(src: []const u8) !i64 {
     }
 }
 
-fn call10(fun: *const fn (i64) void) []const u32 {
+fn call10(fun: *const fn (Value) void) []const u32 {
     const f: u64 = @intFromPtr(fun);
     std.debug.print("call10: {x}\n", .{f});
     var buffer = std.ArrayList(u32).init(std.heap.page_allocator);
@@ -313,7 +315,7 @@ fn call10(fun: *const fn (i64) void) []const u32 {
 }
 
 const Builtins = struct {
-    fn print(a: i64) void {
+    fn print(a: Value) void {
         std.debug.print("{d}", .{a});
     }
 };
