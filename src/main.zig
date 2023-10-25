@@ -11,22 +11,112 @@ const Ops = enum(u32) {
     CALLSLOT = 0xffffffff, // not a real instruction, used to emit a constant
 };
 
-fn binOp(comptime op: u32, comptime swap: bool) []const u32 {
+const Word = struct {
+    code: []const u32, //machine code
+    c: usize, //consumes
+    p: usize, //produces
+    callSlot: ?*const void,
+};
+
+fn fnToWord(comptime fun: anytype) Word {
+    const T = @TypeOf(fun);
+    const typeinfo = @typeInfo(T).Fn;
+    const paramCount = typeinfo.params.len;
+    var returnCount = 0;
+    for (0..paramCount) |i| {
+        if (typeinfo.params[i].type.? != Value) {
+            @compileError("fnToWord: param {} must be Value");
+        }
+    }
+    if (typeinfo.return_type) |rt| {
+        if (rt != Value and rt != void) {
+            @compileError("fnToWord: return type must be Value or void");
+        }
+        if (rt == Value) {
+            returnCount = 1;
+        }
+    }
+
+    // 1 for call slot, 1 for each param, 1 for each return value
+    const codeLen: usize = 1 + paramCount + returnCount;
+
+    var code = [1]u32{undefined} ** codeLen;
+
+    // pop all params
+    for (0..paramCount) |i| {
+        code[i] = @intFromEnum(Ops.POPX0) | @as(u32, @intCast(i));
+    }
+
+    // call the function and push the result
+    if (returnCount == 1) {
+        code[codeLen - 2] = @intFromEnum(Ops.CALLSLOT);
+        code[codeLen - 1] = @intFromEnum(Ops.PUSHX0);
+    } else {
+        code[codeLen - 1] = @intFromEnum(Ops.CALLSLOT);
+    }
+
+    return Word{
+        .code = &code,
+        .c = paramCount,
+        .p = returnCount,
+        .callSlot = @ptrCast(&fun),
+    };
+}
+
+fn binOp(comptime op: u32, comptime swap: bool) Word {
     var p1 = Ops.POPX0;
     var p2 = Ops.POPX1;
     if (swap) {
         p1 = Ops.POPX1;
         p2 = Ops.POPX0;
     }
-    return &[_]u32{
+    const code = &[_]u32{
         @intFromEnum(p1),
         @intFromEnum(p2),
         op,
         @intFromEnum(Ops.PUSHX0),
     };
+    return Word{
+        .code = code,
+        .c = 2,
+        .p = 1,
+        .callSlot = null,
+    };
 }
 
-const words = std.ComptimeStringMap([]const u32, .{
+fn cmpOp(comptime op: u32) Word {
+    return inlineWord(&[_]u32{
+        @intFromEnum(Ops.POPX1),
+        @intFromEnum(Ops.POPX0),
+        0xeb01001f,
+        op,
+        0xd2800000,
+        0x14000002,
+        0xd2800020,
+        @intFromEnum(Ops.PUSHX0),
+    }, 2, 1);
+}
+
+fn inlineWord(comptime code: []const u32, comptime c: usize, comptime p: usize) Word {
+    return Word{
+        .code = code,
+        .c = c,
+        .p = p,
+        .callSlot = null,
+    };
+}
+
+const Builtins = struct {
+    fn print(a: Value) void {
+        std.debug.print("{d}\n", .{a});
+    }
+    fn spy(a: Value) Value {
+        std.debug.print("spy: {d}\n", .{a});
+        return a;
+    }
+};
+
+const words = std.ComptimeStringMap(Word, .{
     // a b -- a+b
     .{ "+", binOp(0x8b010000, false) }, // add x0, x0, x1
     // a b -- a-b
@@ -35,51 +125,57 @@ const words = std.ComptimeStringMap([]const u32, .{
     .{ "*", binOp(0x9b017c00, false) }, // mul x0, x0, x1
     // a b -- a/b
     .{ "/", binOp(0x9ac10c00, true) }, // sdiv x0, x1, x0
+    .{ "=", cmpOp(0x54000060) },
+    .{ "!=", cmpOp(0x54000061) },
+    .{ ">", cmpOp(0x5400006c) },
+    .{ "<", cmpOp(0x5400006b) },
+    .{ ">=", cmpOp(0x5400006a) },
+    .{ "<=", cmpOp(0x5400006d) },
     // a -- a a
-    .{ "dup", &[_]u32{
+    .{ "dup", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
         @intFromEnum(Ops.PUSHX0),
         @intFromEnum(Ops.PUSHX0),
-    } },
+    }, 1, 2) },
     // a b -- b a
-    .{ "swap", &[_]u32{
+    .{ "swap", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
         @intFromEnum(Ops.POPX1),
         @intFromEnum(Ops.PUSHX0),
         @intFromEnum(Ops.PUSHX1),
-    } },
+    }, 2, 2) },
     // a --
-    .{ "drop", &[_]u32{
+    .{ "drop", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
-    } },
+    }, 1, 0) },
     // a b -- a b a
-    .{ "over", &[_]u32{
+    .{ "over", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
         @intFromEnum(Ops.POPX1),
         @intFromEnum(Ops.PUSHX1),
         @intFromEnum(Ops.PUSHX0),
         @intFromEnum(Ops.PUSHX1),
-    } },
+    }, 2, 3) },
     // a b -- b
-    .{ "nip", &[_]u32{
+    .{ "nip", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
         @intFromEnum(Ops.POPX1),
         @intFromEnum(Ops.PUSHX0),
-    } },
+    }, 2, 1) },
     // a b -- b a b
-    .{ "tuck", &[_]u32{
+    .{ "tuck", inlineWord(&[_]u32{
         @intFromEnum(Ops.POPX0),
         @intFromEnum(Ops.POPX1),
         @intFromEnum(Ops.PUSHX0),
         @intFromEnum(Ops.PUSHX1),
         @intFromEnum(Ops.PUSHX0),
-    } },
+    }, 2, 3) },
+    .{ ".", fnToWord(Builtins.print) },
+    .{ "spy", fnToWord(Builtins.spy) },
 });
 
-var dynWords: std.StringHashMap([]const u32) = std.StringHashMap([]const u32).init(std.heap.page_allocator);
-
-fn findWord(word: []const u8) ?[]const u32 {
-    return words.get(word) orelse dynWords.get(word);
+fn findWord(word: []const u8) ?Word {
+    return words.get(word);
 }
 
 // parser
@@ -156,25 +252,23 @@ const Compiler = struct {
         self.prev = instr;
     }
 
-    fn emitWord(self: *Compiler, word: []const u32) !void {
+    fn emitWord(self: *Compiler, word: Word) !void {
         var i: usize = 0;
-        std.debug.print("emitWord: {x}\n", .{word});
+        std.debug.print("emitWord: {}\n", .{word});
         while (true) {
-            const instr = word[i];
+            const instr = word.code[i];
             std.debug.print("emit {x}\n", .{instr});
             if (instr == @intFromEnum(Ops.CALLSLOT)) {
-                const lo: u64 = word[i + 1];
-                const hi: u64 = word[i + 2];
-                const fun: u64 = lo | (hi << 32);
+                const fun: u64 = @intFromPtr(word.callSlot);
                 std.debug.print("emit call to {x}\n", .{fun});
                 try self.emitNumber(fun, 20);
                 try self.emitCall(20);
-                i += 3;
+                i += 1;
             } else {
                 try self.emit(instr);
                 i += 1;
             }
-            if (i >= word.len) {
+            if (i >= word.code.len) {
                 break;
             }
         }
@@ -227,7 +321,7 @@ const Compiler = struct {
                 std.debug.print("compiling {s}\n", .{token.Word});
                 const word = findWord(token.Word);
                 if (word) |w| {
-                    std.debug.print("src: {x}\n", .{w});
+                    std.debug.print("src: {}\n", .{w});
                     try self.emitWord(w);
                 } else {
                     std.debug.print("unknown word: {s}\n", .{token.Word});
@@ -314,14 +408,10 @@ fn call10(fun: *const fn (Value) void) []const u32 {
     return buffer.toOwnedSlice() catch unreachable;
 }
 
-const Builtins = struct {
-    fn print(a: Value) void {
-        std.debug.print("{d}", .{a});
-    }
-};
-
 pub fn main() !void {
-    try dynWords.put(".", call10(&Builtins.print));
-    _ = try run("2 10 .");
+    //_ = try run("10 dup * 300 + 4 6 * 4 - +");
+    //_ = try run("69 spy");
+    _ = try run("69 69 <=");
+
     return;
 }
