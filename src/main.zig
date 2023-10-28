@@ -2,13 +2,55 @@ const std = @import("std");
 
 const Value = i64;
 
-const Ops = enum(u32) {
-    PUSHX0 = 0xf81f0fe0, // str x0, [sp, #-16]!
-    PUSHX1 = 0xf81f0fe1, // str x1, [sp, #-16]!
-    POPX0 = 0xf84107e0, // ldr x0, [sp], #16
-    POPX1 = 0xf84107e1, // ldr x1, [sp], #16
-    CALL = 0xd63f0280, // blr x20
-    CALLSLOT = 0xffffffff, // not a real instruction, used to emit a constant
+const Asm = struct {
+    const @"str x0, [sp, #-16]!" = 0xf81f0fe0;
+    const @"str x1, [sp, #-16]!" = 0xf81f0fe1;
+    const @"ldr x0, [sp], #16" = 0xf84107e0;
+    const @"ldr x1, [sp], #16" = 0xf84107e1;
+    const @"stp x29, x30, [sp, #0x10]!" = 0xa9bf7bfd;
+    const @"ldp x29, x30, [sp], #0x10" = 0xa8c17bfd;
+    const @"mov x29, sp" = 0x910003fd;
+    const @"mov sp, x29" = 0x910003bf;
+
+    const @"mov x0, #0" = 0xd2800000;
+    const @"mov x0, #1" = 0xd2800020;
+
+    const @"add x0, x0, x1" = 0x8b010000;
+    const @"sub x0, x1, x0" = 0xcb010000;
+    const @"mul x0, x0, x1" = 0x9b017c00;
+    const @"sdiv x0, x1, x0" = 0x9ac10c00;
+
+    const @"cmp x0, x1" = 0xeb01001f;
+
+    const @"b 2" = 0x14000002;
+
+    const @"beq #2" = 0x54000060;
+    const @"bne #2" = 0x54000061;
+    const @"bgt #2" = 0x5400006c;
+    const @"blt #2" = 0x5400006b;
+    const @"bge #2" = 0x5400006a;
+    const @"ble #2" = 0x5400006d;
+
+    const @"blr x0" = 0xd63f0000;
+
+    const ret = 0xd65f03c0;
+
+    const CALLSLOT = 0xffffffff;
+
+    const PUSHX0 = @"str x0, [sp, #-16]!";
+    const PUSHX1 = @"str x1, [sp, #-16]!";
+    const POPX0 = @"ldr x0, [sp], #16";
+    const POPX1 = @"ldr x1, [sp], #16";
+
+    const REGCALL = 20;
+
+    fn @"blr Xn"(n: u5) u32 {
+        return @"blr x0" | @as(u32, @intCast(n)) << 5;
+    }
+
+    fn @"POP Xn"(n: usize) u32 {
+        return POPX0 + @as(u32, @intCast(n));
+    }
 };
 
 const Word = struct {
@@ -16,6 +58,9 @@ const Word = struct {
     c: usize, //consumes
     p: usize, //produces
     callSlot: ?*const void,
+
+    const DEFINE = ":";
+    const END = ";";
 };
 
 fn fnToWord(comptime fun: anytype) Word {
@@ -44,15 +89,15 @@ fn fnToWord(comptime fun: anytype) Word {
 
     // pop all params
     for (0..paramCount) |i| {
-        code[i] = @intFromEnum(Ops.POPX0) | @as(u32, @intCast(i));
+        code[i] = Asm.@"POP Xn"(i);
     }
 
     // call the function and push the result
     if (returnCount == 1) {
-        code[codeLen - 2] = @intFromEnum(Ops.CALLSLOT);
-        code[codeLen - 1] = @intFromEnum(Ops.PUSHX0);
+        code[codeLen - 2] = Asm.CALLSLOT;
+        code[codeLen - 1] = Asm.PUSHX0;
     } else {
-        code[codeLen - 1] = @intFromEnum(Ops.CALLSLOT);
+        code[codeLen - 1] = Asm.CALLSLOT;
     }
 
     return Word{
@@ -64,17 +109,17 @@ fn fnToWord(comptime fun: anytype) Word {
 }
 
 fn binOp(comptime op: u32, comptime swap: bool) Word {
-    var p1 = Ops.POPX0;
-    var p2 = Ops.POPX1;
+    var p1 = Asm.POPX0;
+    var p2 = Asm.POPX1;
     if (swap) {
-        p1 = Ops.POPX1;
-        p2 = Ops.POPX0;
+        p1 = Asm.POPX1;
+        p2 = Asm.POPX0;
     }
     const code = &[_]u32{
-        @intFromEnum(p1),
-        @intFromEnum(p2),
+        p1,
+        p2,
         op,
-        @intFromEnum(Ops.PUSHX0),
+        Asm.PUSHX0,
     };
     return Word{
         .code = code,
@@ -86,14 +131,14 @@ fn binOp(comptime op: u32, comptime swap: bool) Word {
 
 fn cmpOp(comptime op: u32) Word {
     return inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX1),
-        @intFromEnum(Ops.POPX0),
-        0xeb01001f,
+        Asm.POPX0,
+        Asm.POPX1,
+        Asm.@"cmp x0, x1",
         op,
-        0xd2800000,
-        0x14000002,
-        0xd2800020,
-        @intFromEnum(Ops.PUSHX0),
+        Asm.@"mov x0, #0",
+        Asm.@"b 2",
+        Asm.@"mov x0, #1",
+        Asm.PUSHX0,
     }, 2, 1);
 }
 
@@ -118,64 +163,39 @@ const Builtins = struct {
 
 const words = std.ComptimeStringMap(Word, .{
     // a b -- a+b
-    .{ "+", binOp(0x8b010000, false) }, // add x0, x0, x1
+    .{ "+", binOp(Asm.@"add x0, x0, x1", false) },
     // a b -- a-b
-    .{ "-", binOp(0xcb010000, true) }, // sub x0, x1, x0
+    .{ "-", binOp(Asm.@"sub x0, x1, x0", true) },
     // a b -- a*b
-    .{ "*", binOp(0x9b017c00, false) }, // mul x0, x0, x1
+    .{ "*", binOp(Asm.@"mul x0, x0, x1", false) },
     // a b -- a/b
-    .{ "/", binOp(0x9ac10c00, true) }, // sdiv x0, x1, x0
-    .{ "=", cmpOp(0x54000060) },
-    .{ "!=", cmpOp(0x54000061) },
-    .{ ">", cmpOp(0x5400006c) },
-    .{ "<", cmpOp(0x5400006b) },
-    .{ ">=", cmpOp(0x5400006a) },
-    .{ "<=", cmpOp(0x5400006d) },
+    .{ "/", binOp(Asm.@"sdiv x0, x1, x0", true) },
+    .{ "=", cmpOp(Asm.@"beq #2") },
+    .{ "!=", cmpOp(Asm.@"bne #2") },
+    .{ ">", cmpOp(Asm.@"bgt #2") },
+    .{ "<", cmpOp(Asm.@"blt #2") },
+    .{ ">=", cmpOp(Asm.@"bge #2") },
+    .{ "<=", cmpOp(Asm.@"ble #2") },
     // a -- a a
-    .{ "dup", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-        @intFromEnum(Ops.PUSHX0),
-        @intFromEnum(Ops.PUSHX0),
-    }, 1, 2) },
+    .{ "dup", inlineWord(&[_]u32{ Asm.POPX0, Asm.PUSHX0, Asm.PUSHX0 }, 1, 2) },
     // a b -- b a
-    .{ "swap", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-        @intFromEnum(Ops.POPX1),
-        @intFromEnum(Ops.PUSHX0),
-        @intFromEnum(Ops.PUSHX1),
-    }, 2, 2) },
+    .{ "swap", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0, Asm.PUSHX1 }, 2, 2) },
     // a --
-    .{ "drop", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-    }, 1, 0) },
+    .{ "drop", inlineWord(&[_]u32{Asm.POPX0}, 1, 0) },
     // a b -- a b a
-    .{ "over", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-        @intFromEnum(Ops.POPX1),
-        @intFromEnum(Ops.PUSHX1),
-        @intFromEnum(Ops.PUSHX0),
-        @intFromEnum(Ops.PUSHX1),
-    }, 2, 3) },
+    .{ "over", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX1, Asm.PUSHX0, Asm.PUSHX1 }, 2, 3) },
     // a b -- b
-    .{ "nip", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-        @intFromEnum(Ops.POPX1),
-        @intFromEnum(Ops.PUSHX0),
-    }, 2, 1) },
+    .{ "nip", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0 }, 2, 1) },
     // a b -- b a b
-    .{ "tuck", inlineWord(&[_]u32{
-        @intFromEnum(Ops.POPX0),
-        @intFromEnum(Ops.POPX1),
-        @intFromEnum(Ops.PUSHX0),
-        @intFromEnum(Ops.PUSHX1),
-        @intFromEnum(Ops.PUSHX0),
-    }, 2, 3) },
+    .{ "tuck", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0, Asm.PUSHX1, Asm.PUSHX0 }, 2, 3) },
     .{ ".", fnToWord(Builtins.print) },
     .{ "spy", fnToWord(Builtins.spy) },
 });
 
+var userWords: std.StringHashMap(Word) = undefined;
+
 fn findWord(word: []const u8) ?Word {
-    return words.get(word);
+    return words.get(word) orelse userWords.get(word);
 }
 
 // parser
@@ -231,6 +251,13 @@ const Compiler = struct {
     code: std.ArrayList(u32),
     prev: u32 = 0,
 
+    const Error = error{
+        ExpectedWord,
+        UnexpectedEndOfInput,
+        UnknownWord,
+        OutOfMemory,
+    };
+
     fn init(parser: *Parser) Compiler {
         return Compiler{
             .code = std.ArrayList(u32).init(std.heap.page_allocator),
@@ -239,7 +266,7 @@ const Compiler = struct {
     }
 
     fn emit(self: *Compiler, instr: u32) !void {
-        if (self.prev == @intFromEnum(Ops.PUSHX0) and instr == @intFromEnum(Ops.POPX0)) {
+        if (self.prev == Asm.PUSHX0 and instr == Asm.POPX0) {
             _ = self.code.pop();
             if (self.code.items.len == 0) {
                 self.prev = 0;
@@ -258,11 +285,11 @@ const Compiler = struct {
         while (true) {
             const instr = word.code[i];
             std.debug.print("emit {x}\n", .{instr});
-            if (instr == @intFromEnum(Ops.CALLSLOT)) {
+            if (instr == Asm.CALLSLOT) {
                 const fun: u64 = @intFromPtr(word.callSlot);
                 std.debug.print("emit call to {x}\n", .{fun});
-                try self.emitNumber(fun, 20);
-                try self.emitCall(20);
+                try self.emitNumber(fun, Asm.REGCALL);
+                try self.emitCall(Asm.REGCALL);
                 i += 1;
             } else {
                 try self.emit(instr);
@@ -275,13 +302,11 @@ const Compiler = struct {
     }
 
     fn emitPush(self: *Compiler) !void {
-        // str x0, [sp, #-16]!
-        try self.emit(@intFromEnum(Ops.PUSHX0));
+        try self.emit(Asm.PUSHX0);
     }
 
     fn emitPop(self: *Compiler) !void {
-        // ldr x0, [sp], #16
-        try self.emit(@intFromEnum(Ops.POPX0));
+        try self.emit(Asm.POPX0);
     }
 
     fn seg16(x: u64, shift: u6) u32 {
@@ -307,10 +332,10 @@ const Compiler = struct {
     }
 
     fn emitCall(self: *Compiler, r: u5) !void {
-        try self.emit(0xd63f0000 | @as(u32, @intCast(r)) << 5);
+        try self.emit(Asm.@"blr Xn"(r));
     }
 
-    fn compileToken(self: *Compiler, token: Parser.Token) !void {
+    fn compileToken(self: *Compiler, token: Parser.Token) Error!void {
         switch (token) {
             .Number => {
                 const n = @as(u64, @bitCast(token.Number));
@@ -325,40 +350,78 @@ const Compiler = struct {
                     try self.emitWord(w);
                 } else {
                     std.debug.print("unknown word: {s}\n", .{token.Word});
-                    return;
+                    return Error.UnknownWord;
                 }
             },
         }
     }
 
+    fn compileDefinition(self: *Compiler) Error!void {
+        var name = self.parser.nextToken();
+        if (name) |n| {
+            switch (n) {
+                .Word => |w| {
+                    var compiler = Compiler.init(self.parser);
+                    var code = try compiler.compile(false);
+                    try userWords.put(w, Word{
+                        .code = code,
+                        .c = 0,
+                        .p = 0,
+                        .callSlot = null,
+                    });
+                },
+                else => {
+                    return Error.ExpectedWord;
+                },
+            }
+        } else {
+            return Error.UnexpectedEndOfInput;
+        }
+    }
+
     fn enter(self: *Compiler) !void {
-        // stp x29, x30, [sp, #0x10]!
-        try self.emit(0xa9bf7bfd);
-        // mov x29, sp
-        try self.emit(0x910003fd);
+        try self.emit(Asm.@"stp x29, x30, [sp, #0x10]!");
+        try self.emit(Asm.@"mov x29, sp");
     }
 
     fn leave(self: *Compiler) !void {
-        // mov sp, x29
-        try self.emit(0x910003bf);
-        // ldp x29, x30, [sp], #0x10
-        try self.emit(0xa8c17bfd);
-        // ret
-        try self.emit(0xd65f03c0);
+        try self.emit(Asm.@"mov sp, x29");
+        try self.emit(Asm.@"ldp x29, x30, [sp], #0x10");
+        try self.emit(Asm.ret);
     }
 
-    fn compile(self: *Compiler) ![]u32 {
-        try self.enter();
-
+    fn compile(self: *Compiler, func: bool) Error![]u32 {
+        if (func) {
+            try self.enter();
+        }
         var token = self.parser.nextToken();
         while (token != null) : (token = self.parser.nextToken()) {
+            switch (token.?) {
+                .Word => |w| {
+                    std.debug.print("check special {s}\n", .{w});
+                    if (std.mem.eql(u8, w, Word.END)) {
+                        std.debug.print("end of definition\n", .{});
+                        break;
+                    }
+                    if (std.mem.eql(u8, w, Word.DEFINE)) {
+                        std.debug.print("start of definition\n", .{});
+                        try self.compileDefinition();
+                        continue;
+                    }
+                },
+                else => {},
+            }
             try self.compileToken(token.?);
         }
-
-        try self.emitPop();
-        try self.leave();
-
+        if (func) {
+            try self.emitPop();
+            try self.leave();
+        }
         return self.code.toOwnedSlice();
+    }
+
+    fn compileFn(self: *Compiler) ![]u32 {
+        return self.compile(true);
     }
 };
 
@@ -380,9 +443,10 @@ fn jitRun(code: []u32) !Value {
 }
 
 fn run(src: []const u8) !Value {
+    userWords = std.StringHashMap(Word).init(std.heap.page_allocator);
     var parser = Parser.init(src);
     var compiler = Compiler.init(&parser);
-    var code = compiler.compile();
+    var code = compiler.compileFn();
     if (code) |c| {
         _ = try std.io.getStdOut().write(std.mem.sliceAsBytes(c));
         const x = try jitRun(c);
@@ -394,24 +458,8 @@ fn run(src: []const u8) !Value {
     }
 }
 
-fn call10(fun: *const fn (Value) void) []const u32 {
-    const f: u64 = @intFromPtr(fun);
-    std.debug.print("call10: {x}\n", .{f});
-    var buffer = std.ArrayList(u32).init(std.heap.page_allocator);
-    const lo: u32 = @truncate(f);
-    const hi: u32 = @truncate((f >> 32));
-
-    buffer.append(@intFromEnum(Ops.POPX0)) catch unreachable;
-    buffer.append(@intFromEnum(Ops.CALLSLOT)) catch unreachable;
-    buffer.append(lo) catch unreachable;
-    buffer.append(hi) catch unreachable;
-    return buffer.toOwnedSlice() catch unreachable;
-}
-
 pub fn main() !void {
-    //_ = try run("10 dup * 300 + 4 6 * 4 - +");
-    //_ = try run("69 spy");
-    _ = try run("69 69 <=");
+    _ = try run(": 🎉 dup * ; 2 🎉");
 
     return;
 }
