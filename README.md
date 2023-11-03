@@ -7,6 +7,7 @@ As in: *functional, yeah*.
 
 This is a toy, and an early work in progress. 
 
+Join [#fy on concatenative Discord](https://discord.com/channels/1150472957093744721/1166896397254131804) to discuss.
 
 ## Building
 
