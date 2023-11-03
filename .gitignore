@@ -4,3 +4,4 @@ zig-out
 *.o
 *.s
 yy
+*.txt
