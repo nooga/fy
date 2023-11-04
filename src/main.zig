@@ -420,6 +420,8 @@ const Fy = struct {
         fn compile(self: *Compiler, func: bool) Error![]u32 {
             if (func) {
                 try self.enter();
+                try self.emitNumber(0, 0);
+                try self.emitPush();
             }
             var token = self.parser.nextToken();
             while (token != null) : (token = self.parser.nextToken()) {
