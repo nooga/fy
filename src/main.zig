@@ -261,13 +261,21 @@ const Fy = struct {
             }
             var c = self.code[self.pos];
             const start = self.pos;
+            if (c == ':') {
+                self.pos += 1;
+                return Token{ .Word = Word.DEFINE };
+            }
+            if (c == ';') {
+                self.pos += 1;
+                return Token{ .Word = Word.END };
+            }
             if (isDigit(c)) {
                 while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
                     self.pos += 1;
                 }
                 return Token{ .Number = std.fmt.parseInt(Value, self.code[start..self.pos], 10) catch 2137 };
             }
-            while (self.pos < self.code.len and !isWhitespace(self.code[self.pos])) {
+            while (self.pos < self.code.len and !isWhitespace(self.code[self.pos]) and self.code[self.pos] != ';') {
                 self.pos += 1;
             }
 
