@@ -23,6 +23,7 @@ const Fy = struct {
         while (keys.next()) |k| {
             if (self.userWords.get(k.*)) |v| {
                 self.fyalloc.free(v.code);
+                self.fyalloc.free(k.*);
             }
         }
         self.userWords.deinit();
@@ -64,21 +65,26 @@ const Fy = struct {
 
         const ret = 0xd65f03c0;
 
+        // pseudo instructions
+
+        // call slot is used to indicate where to put the function call address and is replaced with the actual address
         const CALLSLOT = 0xffffffff;
 
-        const PUSHX0 = @"str x0, [sp, #-16]!";
-        const PUSHX1 = @"str x1, [sp, #-16]!";
-        const POPX0 = @"ldr x0, [sp], #16";
-        const POPX1 = @"ldr x1, [sp], #16";
+        const @".push x0" = @"str x0, [sp, #-16]!";
+        const @".push x1" = @"str x1, [sp, #-16]!";
+        const @".pop x0" = @"ldr x0, [sp], #16";
+        const @".pop x1" = @"ldr x1, [sp], #16";
 
+        // register used to store call address: x20
         const REGCALL = 20;
 
+        // helpers
         fn @"blr Xn"(n: u5) u32 {
             return @"blr x0" | @as(u32, @intCast(n)) << 5;
         }
 
-        fn @"POP Xn"(n: usize) u32 {
-            return POPX0 + @as(u32, @intCast(n));
+        fn @".pop xn"(n: usize) u32 {
+            return @".pop x0" + @as(u32, @intCast(n));
         }
     };
 
@@ -118,13 +124,13 @@ const Fy = struct {
 
         // pop all params
         for (0..paramCount) |i| {
-            code[i] = Asm.@"POP Xn"(i);
+            code[i] = Asm.@".pop xn"(i);
         }
 
         // call the function and push the result
         if (returnCount == 1) {
             code[codeLen - 2] = Asm.CALLSLOT;
-            code[codeLen - 1] = Asm.PUSHX0;
+            code[codeLen - 1] = Asm.@".push x0";
         } else {
             code[codeLen - 1] = Asm.CALLSLOT;
         }
@@ -138,17 +144,17 @@ const Fy = struct {
     }
 
     fn binOp(comptime op: u32, comptime swap: bool) Word {
-        var p1 = Asm.POPX0;
-        var p2 = Asm.POPX1;
+        var p1 = Asm.@".pop x0";
+        var p2 = Asm.@".pop x1";
         if (swap) {
-            p1 = Asm.POPX1;
-            p2 = Asm.POPX0;
+            p1 = Asm.@".pop x1";
+            p2 = Asm.@".pop x0";
         }
         const code = &[_]u32{
             p1,
             p2,
             op,
-            Asm.PUSHX0,
+            Asm.@".push x0",
         };
         return Word{
             .code = code,
@@ -160,14 +166,14 @@ const Fy = struct {
 
     fn cmpOp(comptime op: u32) Word {
         return inlineWord(&[_]u32{
-            Asm.POPX0,
-            Asm.POPX1,
+            Asm.@".pop x0",
+            Asm.@".pop x1",
             Asm.@"cmp x0, x1",
             op,
             Asm.@"mov x0, #0",
             Asm.@"b 2",
             Asm.@"mov x0, #1",
-            Asm.PUSHX0,
+            Asm.@".push x0",
         }, 2, 1);
     }
 
@@ -201,22 +207,22 @@ const Fy = struct {
         .{ "/", binOp(Asm.@"sdiv x0, x1, x0", true) },
         .{ "=", cmpOp(Asm.@"beq #2") },
         .{ "!=", cmpOp(Asm.@"bne #2") },
-        .{ ">", cmpOp(Asm.@"bgt #2") },
-        .{ "<", cmpOp(Asm.@"blt #2") },
-        .{ ">=", cmpOp(Asm.@"bge #2") },
-        .{ "<=", cmpOp(Asm.@"ble #2") },
+        .{ ">", cmpOp(Asm.@"blt #2") },
+        .{ "<", cmpOp(Asm.@"bgt #2") },
+        .{ ">=", cmpOp(Asm.@"ble #2") },
+        .{ "<=", cmpOp(Asm.@"bge #2") },
         // a -- a a
-        .{ "dup", inlineWord(&[_]u32{ Asm.POPX0, Asm.PUSHX0, Asm.PUSHX0 }, 1, 2) },
+        .{ "dup", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".push x0", Asm.@".push x0" }, 1, 2) },
         // a b -- b a
-        .{ "swap", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0, Asm.PUSHX1 }, 2, 2) },
+        .{ "swap", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0", Asm.@".push x1" }, 2, 2) },
         // a --
-        .{ "drop", inlineWord(&[_]u32{Asm.POPX0}, 1, 0) },
+        .{ "drop", inlineWord(&[_]u32{Asm.@".pop x0"}, 1, 0) },
         // a b -- a b a
-        .{ "over", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX1, Asm.PUSHX0, Asm.PUSHX1 }, 2, 3) },
+        .{ "over", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x1", Asm.@".push x0", Asm.@".push x1" }, 2, 3) },
         // a b -- b
-        .{ "nip", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0 }, 2, 1) },
+        .{ "nip", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0" }, 2, 1) },
         // a b -- b a b
-        .{ "tuck", inlineWord(&[_]u32{ Asm.POPX0, Asm.POPX1, Asm.PUSHX0, Asm.PUSHX1, Asm.PUSHX0 }, 2, 3) },
+        .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0", Asm.@".push x1", Asm.@".push x0" }, 2, 3) },
         // a --
         .{ ".", fnToWord(Builtins.print) },
         // a -- a
@@ -306,7 +312,7 @@ const Fy = struct {
         }
 
         fn emit(self: *Compiler, instr: u32) !void {
-            if (self.prev == Asm.PUSHX0 and instr == Asm.POPX0) {
+            if (self.prev == Asm.@".push x0" and instr == Asm.@".pop x0") {
                 _ = self.code.pop();
                 if (self.code.items.len == 0) {
                     self.prev = 0;
@@ -339,11 +345,11 @@ const Fy = struct {
         }
 
         fn emitPush(self: *Compiler) !void {
-            try self.emit(Asm.PUSHX0);
+            try self.emit(Asm.@".push x0");
         }
 
         fn emitPop(self: *Compiler) !void {
-            try self.emit(Asm.POPX0);
+            try self.emit(Asm.@".pop x0");
         }
 
         fn seg16(x: u64, shift: u6) u32 {
@@ -569,7 +575,7 @@ pub fn main() !void {
     var line: []u8 = undefined;
     while (true) : (allocator.free(line)) {
         try stdout.print("fy> ", .{});
-        line = try stdin.readUntilDelimiterAlloc(allocator, '\n', 256);
+        line = try stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
         if (line.len == 0) {
             continue;
         }
@@ -581,4 +587,59 @@ pub fn main() !void {
         }
     }
     return;
+}
+
+test "Basic" {
+    const allocator = std.testing.allocator;
+    var fy = Fy.init(allocator);
+    defer fy.deinit();
+
+    const TestCase = struct {
+        input: []const u8,
+        expected: Fy.Value,
+    };
+
+    const testCases: []const TestCase = &[_]TestCase{
+        .{ .input = "1 2 +", .expected = 3 }, //
+        .{ .input = "1 2 -", .expected = -1 },
+        .{ .input = "2 2 *", .expected = 4 },
+        .{ .input = "12 3 /", .expected = 4 },
+        .{ .input = "1 2 =", .expected = 0 },
+        .{ .input = "1 1 =", .expected = 1 },
+        .{ .input = "1 2 !=", .expected = 1 },
+        .{ .input = "1 1 !=", .expected = 0 },
+        .{ .input = "1 2 >", .expected = 0 },
+        .{ .input = "2 1 >", .expected = 1 },
+        .{ .input = "1 2 <", .expected = 1 },
+        .{ .input = "2 1 <", .expected = 0 },
+        .{ .input = "1 2 >=", .expected = 0 },
+        .{ .input = "2 1 >=", .expected = 1 },
+        .{ .input = "2 2 >=", .expected = 1 },
+        .{ .input = "1 2 <=", .expected = 1 },
+        .{ .input = "2 1 <=", .expected = 0 },
+        .{ .input = "2 2 <=", .expected = 1 },
+        .{ .input = "2 dup", .expected = 2 },
+        .{ .input = "2 3 swap", .expected = 2 },
+        .{ .input = "2 3 over", .expected = 2 },
+        .{ .input = "2 3 nip", .expected = 3 },
+        .{ .input = "2 3 tuck", .expected = 3 },
+        .{ .input = "2 3 drop", .expected = 2 },
+        .{ .input = "2 3 4", .expected = 4 },
+        .{ .input = "", .expected = 0 },
+        .{ .input = ": sqr dup * ;", .expected = 0 },
+        .{ .input = "2 sqr", .expected = 4 },
+        .{ .input = ":sqr dup *; 2 sqr", .expected = 4 },
+        .{ .input = ": sqr dup * ; 2 sqr", .expected = 4 },
+        .{ .input = ":a 1; a a +", .expected = 2 },
+        .{ .input = ": a 2 +; :b 3 +; 1 a b 6 =", .expected = 1 },
+        .{ .input = "1 a b", .expected = 6 },
+    };
+
+    for (testCases) |testCase| {
+        std.debug.print("test: {s}\n", .{testCase.input});
+        var input = testCase.input;
+        var result = try fy.run(input);
+        std.debug.print("expect: {d}, result: {d}\n", .{ testCase.expected, result });
+        try std.testing.expect(result == testCase.expected);
+    }
 }
