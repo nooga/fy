@@ -21,7 +21,7 @@ const Fy = struct {
     fn deinitUserWords(self: *Fy) void {
         var keys = self.userWords.keyIterator();
         while (keys.next()) |k| {
-            if (self.userWords.get(k.*)) |v| {
+            if (self.userWords.getPtr(k.*)) |v| {
                 self.fyalloc.free(v.code);
                 self.fyalloc.free(k.*);
             }
@@ -396,6 +396,22 @@ const Fy = struct {
             }
         }
 
+        fn defineWord(self: *Compiler, name: []const u8, code: []u32) !void {
+            var key: []u8 = undefined;
+            if (self.fy.userWords.getPtr(name)) |oldword| {
+                self.fy.fyalloc.free(oldword.code);
+                key = @constCast(name);
+            } else {
+                key = try self.fy.fyalloc.dupe(u8, name);
+            }
+            try self.fy.userWords.put(key, Word{
+                .code = code,
+                .c = 0,
+                .p = 0,
+                .callSlot = null,
+            });
+        }
+
         fn compileDefinition(self: *Compiler) Error!void {
             var name = self.parser.nextToken();
             if (name) |n| {
@@ -403,13 +419,8 @@ const Fy = struct {
                     .Word => |w| {
                         var compiler = Compiler.init(self.fy, self.parser);
                         var code = try compiler.compile(false);
-                        const ownw = try self.fy.fyalloc.dupe(u8, w);
-                        try self.fy.userWords.put(ownw, Word{
-                            .code = code,
-                            .c = 0,
-                            .p = 0,
-                            .callSlot = null,
-                        });
+
+                        try self.defineWord(w, code);
                     },
                     else => {
                         return Error.ExpectedWord;
@@ -636,10 +647,10 @@ test "Basic" {
     };
 
     for (testCases) |testCase| {
-        std.debug.print("test: {s}\n", .{testCase.input});
+        std.debug.print("\nfy> {s}\n", .{testCase.input});
         var input = testCase.input;
         var result = try fy.run(input);
-        std.debug.print("expect: {d}, result: {d}\n", .{ testCase.expected, result });
-        try std.testing.expect(result == testCase.expected);
+        std.debug.print("    {d} (expected {d})\n", .{ result, testCase.expected });
+        try std.testing.expectEqual(testCase.expected, result);
     }
 }
