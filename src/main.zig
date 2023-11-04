@@ -499,6 +499,8 @@ const Fy = struct {
     };
 
     fn jit(self: *Fy, code: []u32) !Fn {
+        // destroy the original code buffer as we already have machine code in memory
+        defer self.fyalloc.free(code);
         // allocate executable memory with mmap
         var mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
 
@@ -510,9 +512,6 @@ const Fy = struct {
 
         // cast the memory to a function pointer and call
         var fun: *const fn () Value = @ptrCast(mem);
-
-        // destroy the original code buffer as we already have machine code in memory
-        self.fyalloc.free(code);
 
         return Fn{ .call = fun };
     }
