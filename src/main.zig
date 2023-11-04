@@ -230,7 +230,7 @@ const Fy = struct {
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
-        return words.get(word) orelse self.userWords.get(word);
+        return self.userWords.get(word) orelse words.get(word);
     }
 
     // parser
@@ -600,18 +600,36 @@ pub fn main() !void {
     return;
 }
 
-test "Basic" {
-    const allocator = std.testing.allocator;
-    var fy = Fy.init(allocator);
+// Tests below
+
+const TestCase = struct {
+    input: []const u8,
+    expected: Fy.Value,
+
+    fn run(self: *const TestCase, fy: *Fy) !void {
+        std.debug.print("\nfy> {s}\n", .{self.input});
+        var input = self.input;
+        var result = try fy.run(input);
+        std.debug.print("exp {d}\n    {d}\n", .{ self.expected, result });
+        try std.testing.expectEqual(self.expected, result);
+    }
+};
+
+fn runCases(fy: *Fy, testCases: []const TestCase) !void {
+    for (testCases) |testCase| {
+        try testCase.run(fy);
+    }
+}
+
+test "Basic expressions and built-in words" {
+    var fy = Fy.init(std.testing.allocator);
     defer fy.deinit();
 
-    const TestCase = struct {
-        input: []const u8,
-        expected: Fy.Value,
-    };
-
-    const testCases: []const TestCase = &[_]TestCase{
-        .{ .input = "1 2 +", .expected = 3 }, //
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "", .expected = 0 }, //
+        .{ .input = "1", .expected = 1 },
+        .{ .input = "1 2", .expected = 2 },
+        .{ .input = "1 2 +", .expected = 3 },
         .{ .input = "1 2 -", .expected = -1 },
         .{ .input = "2 2 *", .expected = 4 },
         .{ .input = "12 3 /", .expected = 4 },
@@ -636,7 +654,6 @@ test "Basic" {
         .{ .input = "2 3 tuck", .expected = 3 },
         .{ .input = "2 3 drop", .expected = 2 },
         .{ .input = "2 3 4", .expected = 4 },
-        .{ .input = "", .expected = 0 },
         .{ .input = ": sqr dup * ;", .expected = 0 },
         .{ .input = "2 sqr", .expected = 4 },
         .{ .input = ":sqr dup *; 2 sqr", .expected = 4 },
@@ -644,13 +661,21 @@ test "Basic" {
         .{ .input = ":a 1; a a +", .expected = 2 },
         .{ .input = ": a 2 +; :b 3 +; 1 a b 6 =", .expected = 1 },
         .{ .input = "1 a b", .expected = 6 },
-    };
+    });
+}
 
-    for (testCases) |testCase| {
-        std.debug.print("\nfy> {s}\n", .{testCase.input});
-        var input = testCase.input;
-        var result = try fy.run(input);
-        std.debug.print("    {d} (expected {d})\n", .{ result, testCase.expected });
-        try std.testing.expectEqual(testCase.expected, result);
-    }
+test "User defined words" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = ": sqr dup * ;", .expected = 0 },
+        .{ .input = "2 sqr", .expected = 4 },
+        .{ .input = ":sqr dup *; 2 sqr", .expected = 4 },
+        .{ .input = ": sqr dup * ; 2 sqr", .expected = 4 },
+        .{ .input = ":a 1; a a +", .expected = 2 },
+        .{ .input = ": a 2 +; :b 3 +; 1 a b 6 =", .expected = 1 },
+        .{ .input = "1 a b", .expected = 6 },
+        .{ .input = "2 dup :dup *; dup", .expected = 4 }, // warning: this breaks dup in this Fy instance forever
+    });
 }
