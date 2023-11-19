@@ -29,11 +29,11 @@ fn debugSlice(mem: []u8, len: usize) void {
 const Fy = struct {
     fyalloc: std.mem.Allocator,
     userWords: std.StringHashMap(Word),
-    returnStack: [RETURNSTACKSIZE]u64 = undefined,
+    dataStack: [DATASTACKSIZE]u64 = undefined,
     image: Image,
 
     const version = "v0.0.0";
-    const RETURNSTACKSIZE = 512;
+    const DATASTACKSIZE = 512;
 
     fn init(allocator: std.mem.Allocator) Fy {
         const image = Image.init() catch @panic("failed to allocate image");
@@ -71,6 +71,13 @@ const Fy = struct {
         const @"ldr x1, [sp], #16" = 0xf84107e1;
         const @"stp x29, x30, [sp, #0x10]!" = 0xa9bf7bfd;
         const @"ldp x29, x30, [sp], #0x10" = 0xa8c17bfd;
+
+        const @"str x0, [x21, #-8]!" = 0xf81f8ea0;
+        const @"str x1, [x21, #-8]!" = 0xf81f8ea1;
+
+        const @"ldr x0, [x21], #8" = 0xf84086a0;
+        const @"ldr x1, [x21], #8" = 0xf84086a1;
+
         const @"mov x29, sp" = 0x910003fd;
         const @"mov sp, x29" = 0x910003bf;
 
@@ -102,10 +109,10 @@ const Fy = struct {
         // call slot is used to indicate where to put the function call address and is replaced with the actual address
         const CALLSLOT = 0xffffffff;
 
-        const @".push x0" = @"str x0, [sp, #-16]!";
-        const @".push x1" = @"str x1, [sp, #-16]!";
-        const @".pop x0" = @"ldr x0, [sp], #16";
-        const @".pop x1" = @"ldr x1, [sp], #16";
+        const @".push x0" = @"str x0, [x21, #-8]!"; //@"str x0, [sp, #-16]!";
+        const @".push x1" = @"str x1, [x21, #-8]!"; //@"str x1, [sp, #-16]!";
+        const @".pop x0" = @"ldr x0, [x21], #8"; //@"ldr x0, [sp], #16";
+        const @".pop x1" = @"ldr x1, [x21], #8"; //@"ldr x1, [sp], #16";
 
         // register used to store call address: x20
         const REGCALL = 20;
@@ -465,11 +472,12 @@ const Fy = struct {
 
         fn enter(self: *Compiler) !void {
             try self.emit(Asm.@"stp x29, x30, [sp, #0x10]!");
-            try self.emit(Asm.@"mov x29, sp");
+            //try self.emit(Asm.@"mov x29, sp");
+            try self.emitNumber(@intFromPtr(&self.fy.dataStack) + DATASTACKSIZE, 21);
         }
 
         fn leave(self: *Compiler) !void {
-            try self.emit(Asm.@"mov sp, x29");
+            //try self.emit(Asm.@"mov sp, x29");
             try self.emit(Asm.@"ldp x29, x30, [sp], #0x10");
             try self.emit(Asm.ret);
         }
