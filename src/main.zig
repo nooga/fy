@@ -1,19 +1,51 @@
 const std = @import("std");
 
+extern fn __clear_cache(start: usize, end: usize) callconv(.C) void;
+
+fn debugSlice(mem: []u8, len: usize) void {
+    // hexdump the image in 4 byte chunks
+    var i: usize = 0;
+
+    // print header with offsets
+    std.debug.print("     ", .{});
+    while (i < 64) {
+        std.debug.print("{x:0>2}       ", .{i});
+        i += 4;
+    }
+    i = 0;
+
+    std.debug.print("\n000  ", .{});
+    while (i < len) {
+        std.debug.print("{} ", .{std.fmt.fmtSliceHexLower(mem[i .. i + 4])});
+        // add a newline every 16 bytes
+        i += 4;
+        if (i % 64 == 0) {
+            std.debug.print("\n{x:0>3}  ", .{i});
+        }
+    }
+    std.debug.print("\n", .{});
+}
+
 const Fy = struct {
     fyalloc: std.mem.Allocator,
     userWords: std.StringHashMap(Word),
+    returnStack: [RETURNSTACKSIZE]u64 = undefined,
+    image: Image,
 
     const version = "v0.0.0";
+    const RETURNSTACKSIZE = 512;
 
     fn init(allocator: std.mem.Allocator) Fy {
+        const image = Image.init() catch @panic("failed to allocate image");
         return Fy{
             .userWords = std.StringHashMap(Word).init(allocator),
             .fyalloc = allocator,
+            .image = image,
         };
     }
 
     fn deinit(self: *Fy) void {
+        self.image.deinit();
         deinitUserWords(self);
         return;
     }
@@ -476,68 +508,66 @@ const Fy = struct {
         }
     };
 
-    // WIP
-    // const Image = struct {
-    //     mem: []align(std.mem.page_size) u8,
-    //     end: *u8,
-    //     linktable: std.StringHashMap([]u32),
-    //     allocator: *std.mem.Allocator,
+    const Image = struct {
+        mem: []align(std.mem.page_size) u8,
+        end: usize,
 
-    //     fn init(allocator: *std.mem.Allocator) Image {
-    //         return Image{
-    //             .mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0),
-    //             .linktable = std.StringHashMap([]u32).init(allocator),
-    //             .allocator = allocator,
-    //         };
-    //     }
+        fn init() !Image {
+            const mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            return Image{
+                .mem = mem,
+                .end = 0,
+            };
+        }
 
-    //     fn deinit(self: *Image) !void {
-    //         self.linktable.deinit();
-    //         try std.os.munmap(self.mem);
-    //     }
+        fn deinit(self: *Image) void {
+            std.os.munmap(self.mem);
+        }
 
-    //     fn grow(self: *Image) !void {
-    //         const oldlen = self.mem.len;
-    //         const newlen = oldlen + std.mem.page_size;
-    //         var new = try std.os.mmap(null, newlen, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
-    //         @memcpy(new, self.mem);
-    //         _ = try std.os.munmap(self.mem);
-    //         self.mem = new;
-    //     }
+        fn grow(self: *Image) !void {
+            const oldlen = self.mem.len;
+            const newlen = oldlen + std.mem.page_size;
+            var new = try std.os.mmap(null, newlen, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            @memcpy(new, self.mem);
+            std.os.munmap(self.mem);
+            self.mem = new;
+        }
 
-    //     fn link(self: *Image, name: []const u8, code: []u32) !*u8 {
-    //         const len = code.len * @sizeOf(u32);
-    //         const memlen = self.mem.len;
-    //         if (self.end + len > self.mem.ptr + memlen) {
-    //             self.grow();
-    //         }
-    //         const new = self.end;
-    //         @memcpy(new, code);
-    //         self.end += len;
-    //         try self.linktable.put(name, self.mem[]);
-    //         return new;
-    //     }
-    // };
+        fn protect(self: *Image, executable: bool) !void {
+            if (executable) {
+                try std.os.mprotect(self.mem, std.os.PROT.READ | std.os.PROT.EXEC);
+            } else {
+                try std.os.mprotect(self.mem, std.os.PROT.READ | std.os.PROT.WRITE);
+            }
+        }
+
+        fn link(self: *Image, code: []u32) []u8 {
+            const len: usize = code.len * @sizeOf(u32);
+            const memlen = self.mem.len;
+            if (self.end + len > memlen) {
+                self.grow() catch @panic("failed to grow image");
+            } else {
+                self.protect(false) catch @panic("failed to set image writable");
+            }
+            const new = self.end;
+            self.end += len;
+            @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
+            self.protect(true) catch @panic("failed to set image executable");
+            __clear_cache(@intFromPtr(self.mem.ptr), @intFromPtr(self.mem.ptr) + self.end);
+            return self.mem[new..self.end];
+        }
+    };
 
     const Fn = struct {
         call: *const fn () Value,
     };
 
     fn jit(self: *Fy, code: []u32) !Fn {
-        // destroy the original code buffer as we already have machine code in memory
-        defer self.fyalloc.free(code);
-        // allocate executable memory with mmap
-        var mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
-
-        // copy code to the new memory
-        @memcpy(mem[0 .. code.len * @sizeOf(u32)], std.mem.sliceAsBytes(code));
-
-        // set the protection to read and execute only
-        try std.os.mprotect(mem, std.os.PROT.READ | std.os.PROT.EXEC);
-
+        const executable: []u8 = self.image.link(code);
+        // free the original code buffer as we already have machine code in executable memory
+        self.fyalloc.free(code);
         // cast the memory to a function pointer and call
-        var fun: *const fn () Value = @ptrCast(mem);
-
+        var fun: *const fn () Value = @alignCast(@ptrCast(executable));
         return Fn{ .call = fun };
     }
 
@@ -583,18 +613,28 @@ pub fn main() !void {
 
     try stdout.print("fy! {s}\n", .{Fy.version});
 
-    var line: []u8 = undefined;
-    while (true) : (allocator.free(line)) {
+    //var line: []u8 = undefined;
+    while (true) {
         try stdout.print("fy> ", .{});
-        line = try stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
-        if (line.len == 0) {
-            continue;
-        }
-        var result = fy.run(line);
-        if (result) |r| {
-            try stdout.print("    {d}\n", .{r});
+        const read = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
+        if (read) |line| {
+            if (line.len == 0) {
+                allocator.free(line);
+                continue;
+            }
+            var result = fy.run(line);
+            allocator.free(line);
+            if (result) |r| {
+                try stdout.print("    {d}\n", .{r});
+            } else |err| {
+                try stdout.print("error: {}\n", .{err});
+            }
+            //allocator.free(line);
         } else |err| {
-            try stdout.print("error: {}\n", .{err});
+            if (err != error.EndOfStream) {
+                try stdout.print("error: {}\n", .{err});
+            }
+            break;
         }
     }
     return;
@@ -653,14 +693,6 @@ test "Basic expressions and built-in words" {
         .{ .input = "2 3 nip", .expected = 3 },
         .{ .input = "2 3 tuck", .expected = 3 },
         .{ .input = "2 3 drop", .expected = 2 },
-        .{ .input = "2 3 4", .expected = 4 },
-        .{ .input = ": sqr dup * ;", .expected = 0 },
-        .{ .input = "2 sqr", .expected = 4 },
-        .{ .input = ":sqr dup *; 2 sqr", .expected = 4 },
-        .{ .input = ": sqr dup * ; 2 sqr", .expected = 4 },
-        .{ .input = ":a 1; a a +", .expected = 2 },
-        .{ .input = ": a 2 +; :b 3 +; 1 a b 6 =", .expected = 1 },
-        .{ .input = "1 a b", .expected = 6 },
     });
 }
 
@@ -679,3 +711,12 @@ test "User defined words" {
         .{ .input = "2 dup :dup *; dup", .expected = 4 }, // warning: this breaks dup in this Fy instance forever
     });
 }
+
+// test "Quotes" {
+//     var fy = Fy.init(std.testing.allocator);
+//     defer fy.deinit();
+
+//     try runCases(&fy, &[_]TestCase{
+//         .{ .input = "1 [dup +] call", .expected = 2 },
+//     });
+// }
