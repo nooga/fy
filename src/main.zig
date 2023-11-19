@@ -135,6 +135,8 @@ const Fy = struct {
 
         const DEFINE = ":";
         const END = ";";
+        const QUOTE_OPEN = "[";
+        const QUOTE_END = "]";
     };
 
     fn fnToWord(comptime fun: anytype) Word {
@@ -229,6 +231,9 @@ const Fy = struct {
         fn print(a: Value) void {
             std.io.getStdOut().writer().print("{d}\n", .{a}) catch std.debug.print("{d}\n", .{a});
         }
+        fn printHex(a: Value) void {
+            std.io.getStdOut().writer().print("{x}\n", .{a}) catch std.debug.print("{x}\n", .{a});
+        }
         fn spy(a: Value) Value {
             print(a);
             return a;
@@ -264,8 +269,12 @@ const Fy = struct {
         .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0", Asm.@".push x1", Asm.@".push x0" }, 2, 3) },
         // a --
         .{ ".", fnToWord(Builtins.print) },
+        // a --
+        .{ ".hex", fnToWord(Builtins.printHex) },
         // a -- a
         .{ "spy", fnToWord(Builtins.spy) },
+        // ? -- ?
+        .{ "call", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"blr Xn"(0) }, 0, 0) },
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
@@ -314,13 +323,21 @@ const Fy = struct {
                 self.pos += 1;
                 return Token{ .Word = Word.END };
             }
+            if (c == '[') {
+                self.pos += 1;
+                return Token{ .Word = Word.QUOTE_OPEN };
+            }
+            if (c == ']') {
+                self.pos += 1;
+                return Token{ .Word = Word.QUOTE_END };
+            }
             if (isDigit(c)) {
                 while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
                     self.pos += 1;
                 }
                 return Token{ .Number = std.fmt.parseInt(Value, self.code[start..self.pos], 10) catch 2137 };
             }
-            while (self.pos < self.code.len and !isWhitespace(self.code[self.pos]) and self.code[self.pos] != ';') {
+            while (self.pos < self.code.len and !isWhitespace(self.code[self.pos]) and self.code[self.pos] != ';' and self.code[self.pos] != ']') {
                 self.pos += 1;
             }
 
@@ -429,6 +446,7 @@ const Fy = struct {
                     if (word) |w| {
                         try self.emitWord(w);
                     } else {
+                        std.debug.print("Unknown word: {s}\n", .{token.Word});
                         return Error.UnknownWord;
                     }
                 },
@@ -451,13 +469,19 @@ const Fy = struct {
             });
         }
 
+        const Wrap = enum {
+            None,
+            Quote,
+            Function,
+        };
+
         fn compileDefinition(self: *Compiler) Error!void {
             var name = self.parser.nextToken();
             if (name) |n| {
                 switch (n) {
                     .Word => |w| {
                         var compiler = Compiler.init(self.fy, self.parser);
-                        var code = try compiler.compile(false);
+                        var code = try compiler.compile(.None);
 
                         try self.defineWord(w, code);
                     },
@@ -470,10 +494,18 @@ const Fy = struct {
             }
         }
 
+        fn compileQuote(self: *Compiler) Error!u64 {
+            var compiler = Compiler.init(self.fy, self.parser);
+            var code = try compiler.compile(.Quote);
+            const executable = self.fy.image.link(code);
+            compiler.fy.fyalloc.free(code);
+            return @intFromPtr(executable.ptr);
+        }
+
         fn enter(self: *Compiler) !void {
             try self.emit(Asm.@"stp x29, x30, [sp, #0x10]!");
             //try self.emit(Asm.@"mov x29, sp");
-            try self.emitNumber(@intFromPtr(&self.fy.dataStack) + DATASTACKSIZE, 21);
+
         }
 
         fn leave(self: *Compiler) !void {
@@ -482,21 +514,34 @@ const Fy = struct {
             try self.emit(Asm.ret);
         }
 
-        fn compile(self: *Compiler, func: bool) Error![]u32 {
-            if (func) {
-                try self.enter();
-                try self.emitNumber(0, 0);
-                try self.emitPush();
+        fn compile(self: *Compiler, wrap: Wrap) Error![]u32 {
+            switch (wrap) {
+                .None => {},
+                .Quote => {
+                    try self.enter();
+                },
+                .Function => {
+                    try self.enter();
+                    try self.emitNumber(@intFromPtr(&self.fy.dataStack) + DATASTACKSIZE, 21);
+                    try self.emitNumber(0, 0);
+                    try self.emitPush();
+                },
             }
             var token = self.parser.nextToken();
             while (token != null) : (token = self.parser.nextToken()) {
                 switch (token.?) {
                     .Word => |w| {
-                        if (std.mem.eql(u8, w, Word.END)) {
+                        if (std.mem.eql(u8, w, Word.END) or std.mem.eql(u8, w, Word.QUOTE_END)) {
                             break;
                         }
                         if (std.mem.eql(u8, w, Word.DEFINE)) {
                             try self.compileDefinition();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, Word.QUOTE_OPEN)) {
+                            const target = try self.compileQuote();
+                            try self.emitNumber(target, 0);
+                            try self.emitPush();
                             continue;
                         }
                     },
@@ -504,15 +549,21 @@ const Fy = struct {
                 }
                 try self.compileToken(token.?);
             }
-            if (func) {
-                try self.emitPop();
-                try self.leave();
+            switch (wrap) {
+                .None => {},
+                .Quote => {
+                    try self.leave();
+                },
+                .Function => {
+                    try self.emitPop();
+                    try self.leave();
+                },
             }
             return self.code.toOwnedSlice();
         }
 
         fn compileFn(self: *Compiler) ![]u32 {
-            return self.compile(true);
+            return self.compile(.Function);
         }
     };
 
@@ -621,7 +672,6 @@ pub fn main() !void {
 
     try stdout.print("fy! {s}\n", .{Fy.version});
 
-    //var line: []u8 = undefined;
     while (true) {
         try stdout.print("fy> ", .{});
         const read = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
@@ -637,7 +687,6 @@ pub fn main() !void {
             } else |err| {
                 try stdout.print("error: {}\n", .{err});
             }
-            //allocator.free(line);
         } else |err| {
             if (err != error.EndOfStream) {
                 try stdout.print("error: {}\n", .{err});
@@ -720,11 +769,13 @@ test "User defined words" {
     });
 }
 
-// test "Quotes" {
-//     var fy = Fy.init(std.testing.allocator);
-//     defer fy.deinit();
+test "Quotes" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
 
-//     try runCases(&fy, &[_]TestCase{
-//         .{ .input = "1 [dup +] call", .expected = 2 },
-//     });
-// }
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "2 [dup +] call", .expected = 4 },
+        .{ .input = "[dup +] 3 swap call", .expected = 6 },
+        .{ .input = ":dup+ [dup +]; 5 dup+ call", .expected = 10 },
+    });
+}
