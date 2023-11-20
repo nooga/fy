@@ -89,9 +89,15 @@ const Fy = struct {
         const @"mul x0, x0, x1" = 0x9b017c00;
         const @"sdiv x0, x1, x0" = 0x9ac10c00;
 
+        const @"add x0, x0, #1" = 0x91000400;
+        const @"sub x0, x0, #1" = 0xd1000400;
+
+        const @"cbz x0, 0" = 0xb4000000;
+
         const @"cmp x0, x1" = 0xeb01001f;
 
-        const @"b 2" = 0x14000002;
+        const @"b 0" = 0x14000000;
+        const @"b 2" = @"b 0" + 2;
 
         const @"beq #2" = 0x54000060;
         const @"bne #2" = 0x54000061;
@@ -120,6 +126,15 @@ const Fy = struct {
         // helpers
         fn @"blr Xn"(n: u5) u32 {
             return @"blr x0" | @as(u32, @intCast(n)) << 5;
+        }
+
+        fn @"cbz Xn, offset"(n: u5, offset: u19) u32 {
+            return @"cbz x0, 0" | @as(u32, @intCast(n)) | @as(u32, @intCast(offset)) << 5;
+        }
+
+        fn @"b offset"(offset: i26) u32 {
+            //@compileLog("b", offset, @"b 0" | (@as(u32, @bitCast(@as(i32, offset)))) & 0x3ffffff);
+            return @"b 0" | (@as(u32, @bitCast(@as(i32, offset))) & 0x3ffffff);
         }
 
         fn @".pop xn"(n: usize) u32 {
@@ -232,7 +247,7 @@ const Fy = struct {
             std.io.getStdOut().writer().print("{d}\n", .{a}) catch std.debug.print("{d}\n", .{a});
         }
         fn printHex(a: Value) void {
-            std.io.getStdOut().writer().print("{x}\n", .{a}) catch std.debug.print("{x}\n", .{a});
+            std.io.getStdOut().writer().print("0x{x}\n", .{a}) catch std.debug.print("0x{x}\n", .{a});
         }
         fn spy(a: Value) Value {
             print(a);
@@ -273,8 +288,40 @@ const Fy = struct {
         .{ ".hex", fnToWord(Builtins.printHex) },
         // a -- a
         .{ "spy", fnToWord(Builtins.spy) },
-        // ? -- ?
-        .{ "call", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"blr Xn"(0) }, 0, 0) },
+        // a -- a + 1
+        .{ "1+", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"add x0, x0, #1", Asm.@".push x0" }, 1, 1) },
+        // a -- a - 1
+        .{ "1-", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"sub x0, x0, #1", Asm.@".push x0" }, 1, 1) },
+        // ... f -- f(...)
+        .{ "do", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"blr Xn"(0) }, 0, 0) },
+        // ... ft -- ft(...) | ...
+        .{
+            "do?", inlineWord(&[_]u32{
+                Asm.@".pop x1", //
+                Asm.@".pop x0", //
+                Asm.@"cbz Xn, offset"(0, 2), // if x0 != 0 goto call
+                Asm.@"blr Xn"(1),
+            }, 0, 1),
+        },
+        // ... n f -- ...
+        .{
+            "dotimes", inlineWord(&[_]u32{
+                // n f
+                Asm.@".pop x0", // n | 0:f
+                Asm.@".pop x1", // | 0:f 1:n
+                Asm.@"cbz Xn, offset"(1, 10), // | x0:f x1:n // if x1 == 0 goto end
+                Asm.@".push x0", // f | x0:f x1:n
+                Asm.@".push x1", // f n | x0:f x1:n
+                Asm.@"blr Xn"(0), // f n | x0:? x1:? // call x0
+                Asm.@".pop x0", // f | x0:n x1:?
+                Asm.@"sub x0, x0, #1", // f | x0:n-1 x1:?
+                Asm.@".pop x1", // | x0:n-1 x1:f
+                Asm.@".push x0", // n-1 | x0:n-1 x1:f
+                Asm.@".push x1", // n-1 f | x0:n-1 x1:f
+                Asm.@"b offset"(-11), // goto start
+                // end
+            }, 2, 0),
+        },
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
@@ -368,15 +415,15 @@ const Fy = struct {
         }
 
         fn emit(self: *Compiler, instr: u32) !void {
-            if (self.prev == Asm.@".push x0" and instr == Asm.@".pop x0") {
-                _ = self.code.pop();
-                if (self.code.items.len == 0) {
-                    self.prev = 0;
-                } else {
-                    self.prev = self.code.getLast();
-                }
-                return;
-            }
+            // if (self.prev == Asm.@".push x0" and instr == Asm.@".pop x0") {
+            //     _ = self.code.pop();
+            //     if (self.code.items.len == 0) {
+            //         self.prev = 0;
+            //     } else {
+            //         self.prev = self.code.getLast();
+            //     }
+            //     return;
+            // }
             try self.code.append(instr);
             self.prev = instr;
         }
@@ -613,6 +660,7 @@ const Fy = struct {
             @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
             self.protect(true) catch @panic("failed to set image executable");
             __clear_cache(@intFromPtr(self.mem.ptr), @intFromPtr(self.mem.ptr) + self.end);
+            //debugSlice(self.mem[new..self.end], self.end - new);
             return self.mem[new..self.end];
         }
     };
@@ -771,11 +819,19 @@ test "User defined words" {
 
 test "Quotes" {
     var fy = Fy.init(std.testing.allocator);
+    std.debug.print("\nmem base: {*}\n", .{fy.image.mem.ptr});
     defer fy.deinit();
 
     try runCases(&fy, &[_]TestCase{
-        .{ .input = "2 [dup +] call", .expected = 4 },
-        .{ .input = "[dup +] 3 swap call", .expected = 6 },
-        .{ .input = ":dup+ [dup +]; 5 dup+ call", .expected = 10 },
+        .{ .input = "2 [dup +] do", .expected = 4 },
+        .{ .input = "[dup +] 3 swap do", .expected = 6 },
+        .{ .input = ":dup+ [dup +]; 5 dup+ do", .expected = 10 },
+        .{ .input = "10 dup+ do", .expected = 20 },
+        .{ .input = "2 [2 *] over over do over do nip nip", .expected = 8 },
+        .{ .input = "[2 *] 1 [1 +] do swap do", .expected = 4 },
+        .{ .input = "2 4 [spy 30 .] dotimes", .expected = 2 },
+        .{ .input = "5 [4 [spy] dotimes] dotimes", .expected = 0 },
+        .{ .input = "100 50 > [5 5 10 > [7] do?] do?", .expected = 5 },
+        .{ .input = "2 3 over over < [*] do?", .expected = 6 },
     });
 }
