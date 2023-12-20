@@ -1,0 +1,11 @@
+.{
+    .name = "fy", //
+    .version = "0.0.1",
+    .paths = .{ "src/", "build.zig", "build.zig.zon" },
+    .dependencies = .{ //
+        .zigline = .{
+            .url = "https://github.com/alimpfard/zigline/archive/a7d4a96b4fa477eeeea55c8f7a0955f5043ee16f.tar.gz",
+            .hash = "1220777678f02dfc3dc72722bcf4a21144e0fbdf5129af56f6a7564a808c9827def5",
+        },
+    },
+}

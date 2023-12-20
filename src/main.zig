@@ -1,4 +1,5 @@
 const std = @import("std");
+const Editor = @import("zigline").Editor;
 
 extern fn __clear_cache(start: usize, end: usize) callconv(.C) void;
 
@@ -72,6 +73,11 @@ const Fy = struct {
         const @"stp x29, x30, [sp, #0x10]!" = 0xa9bf7bfd;
         const @"ldp x29, x30, [sp], #0x10" = 0xa8c17bfd;
 
+        const @"stp x0, x1, [x21, #-16]!" = 0xa9bf06a0;
+        const @"ldp x0, x1, [x21], #16" = 0xa8c106a0;
+        const @"stp x1, x0, [x21, #-16]!" = 0xa9bf02a1;
+        const @"ldp x1, x0, [x21], #16" = 0xa8c102a1;
+
         const @"str x0, [x21, #-8]!" = 0xf81f8ea0;
         const @"str x1, [x21, #-8]!" = 0xf81f8ea1;
 
@@ -92,9 +98,15 @@ const Fy = struct {
         const @"add x0, x0, #1" = 0x91000400;
         const @"sub x0, x0, #1" = 0xd1000400;
 
+        const @"sub x0, x22, x21" = 0xcb1502c0;
+        const @"asr x0, x0, #3" = 0x9343fc00;
+
         const @"cbz x0, 0" = 0xb4000000;
 
         const @"cmp x0, x1" = 0xeb01001f;
+
+        const @"cmp x2, #0" = 0xf100005f;
+        const @"csel x0, x0, x1, ne" = 0x9a811000;
 
         const @"b 0" = 0x14000000;
         const @"b 2" = @"b 0" + 2;
@@ -120,6 +132,11 @@ const Fy = struct {
         const @".pop x0" = @"ldr x0, [x21], #8"; //@"ldr x0, [sp], #16";
         const @".pop x1" = @"ldr x1, [x21], #8"; //@"ldr x1, [sp], #16";
 
+        const @".push x0, x1" = @"stp x1, x0, [x21, #-16]!";
+        const @".pop x0, x1" = @"ldp x0, x1, [x21], #16";
+        const @".push x1, x0" = @"stp x0, x1, [x21, #-16]!";
+        const @".pop x1, x0" = @"ldp x1, x0, [x21], #16";
+
         // register used to store call address: x20
         const REGCALL = 20;
 
@@ -137,8 +154,12 @@ const Fy = struct {
             return @"b 0" | (@as(u32, @bitCast(@as(i32, offset))) & 0x3ffffff);
         }
 
-        fn @".pop xn"(n: usize) u32 {
+        fn @".pop Xn"(n: usize) u32 {
             return @".pop x0" + @as(u32, @intCast(n));
+        }
+
+        fn @"lsr Xn, Xm, #s"(n: u5, m: u5, s: u6) u32 {
+            return 0x9ac12800 | @as(u32, @intCast(n)) | @as(u32, @intCast(m)) << 5 | @as(u32, @intCast(s)) << 10;
         }
     };
 
@@ -180,7 +201,7 @@ const Fy = struct {
 
         // pop all params
         for (0..paramCount) |i| {
-            code[i] = Asm.@".pop xn"(i);
+            code[i] = Asm.@".pop Xn"(i);
         }
 
         // call the function and push the result
@@ -200,15 +221,12 @@ const Fy = struct {
     }
 
     fn binOp(comptime op: u32, comptime swap: bool) Word {
-        var p1 = Asm.@".pop x0";
-        var p2 = Asm.@".pop x1";
+        var p1 = Asm.@".pop x0, x1";
         if (swap) {
-            p1 = Asm.@".pop x1";
-            p2 = Asm.@".pop x0";
+            p1 = Asm.@".pop x1, x0";
         }
         const code = &[_]u32{
             p1,
-            p2,
             op,
             Asm.@".push x0",
         };
@@ -222,8 +240,7 @@ const Fy = struct {
 
     fn cmpOp(comptime op: u32) Word {
         return inlineWord(&[_]u32{
-            Asm.@".pop x0",
-            Asm.@".pop x1",
+            Asm.@".pop x0, x1",
             Asm.@"cmp x0, x1",
             op,
             Asm.@"mov x0, #0",
@@ -273,15 +290,17 @@ const Fy = struct {
         // a -- a a
         .{ "dup", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".push x0", Asm.@".push x0" }, 1, 2) },
         // a b -- b a
-        .{ "swap", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0", Asm.@".push x1" }, 2, 2) },
+        .{ "swap", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0, x1" }, 2, 2) },
         // a --
         .{ "drop", inlineWord(&[_]u32{Asm.@".pop x0"}, 1, 0) },
         // a b -- a b a
-        .{ "over", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x1", Asm.@".push x0", Asm.@".push x1" }, 2, 3) },
+        .{ "over", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x1, x0", Asm.@".push x1" }, 2, 3) },
         // a b -- b
-        .{ "nip", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0" }, 2, 1) },
+        .{ "nip", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0" }, 2, 1) },
         // a b -- b a b
-        .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x0", Asm.@".push x1", Asm.@".push x0" }, 2, 3) },
+        .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0, x1", Asm.@".push x0" }, 2, 3) },
+        // -- a
+        .{ "depth", inlineWord(&[_]u32{ Asm.@"sub x0, x22, x21", Asm.@"asr x0, x0, #3", Asm.@"sub x0, x0, #1", Asm.@".push x0" }, 0, 1) },
         // a --
         .{ ".", fnToWord(Builtins.print) },
         // a --
@@ -297,29 +316,32 @@ const Fy = struct {
         // ... ft -- ft(...) | ...
         .{
             "do?", inlineWord(&[_]u32{
-                Asm.@".pop x1", //
-                Asm.@".pop x0", //
-                Asm.@"cbz Xn, offset"(0, 2), // if x0 != 0 goto call
+                Asm.@".pop x1, x0", //
+                Asm.@"cbz Xn, offset"(0, 2),
                 Asm.@"blr Xn"(1),
+            }, 0, 1),
+        },
+        // ... c ft ff -- ft(...) | ff(...)
+        .{
+            "ifte", inlineWord(&[_]u32{
+                Asm.@".pop x1, x0", //
+                Asm.@".pop Xn"(2),
+                Asm.@"cmp x2, #0",
+                Asm.@"csel x0, x0, x1, ne",
+                Asm.@"blr Xn"(0),
             }, 0, 1),
         },
         // ... n f -- ...
         .{
             "dotimes", inlineWord(&[_]u32{
-                // n f
-                Asm.@".pop x0", // n | 0:f
-                Asm.@".pop x1", // | 0:f 1:n
-                Asm.@"cbz Xn, offset"(1, 10), // | x0:f x1:n // if x1 == 0 goto end
-                Asm.@".push x0", // f | x0:f x1:n
-                Asm.@".push x1", // f n | x0:f x1:n
-                Asm.@"blr Xn"(0), // f n | x0:? x1:? // call x0
-                Asm.@".pop x0", // f | x0:n x1:?
-                Asm.@"sub x0, x0, #1", // f | x0:n-1 x1:?
-                Asm.@".pop x1", // | x0:n-1 x1:f
-                Asm.@".push x0", // n-1 | x0:n-1 x1:f
-                Asm.@".push x1", // n-1 f | x0:n-1 x1:f
-                Asm.@"b offset"(-11), // goto start
-                // end
+                Asm.@".pop x0, x1",
+                Asm.@"cbz Xn, offset"(1, 7),
+                Asm.@".push x0, x1",
+                Asm.@"blr Xn"(0),
+                Asm.@".pop x0, x1",
+                Asm.@"sub x0, x0, #1",
+                Asm.@".push x0, x1",
+                Asm.@"b offset"(-7),
             }, 2, 0),
         },
     });
@@ -570,6 +592,7 @@ const Fy = struct {
                 .Function => {
                     try self.enter();
                     try self.emitNumber(@intFromPtr(&self.fy.dataStack) + DATASTACKSIZE, 21);
+                    try self.emitNumber(@intFromPtr(&self.fy.dataStack) + DATASTACKSIZE, 22);
                     try self.emitNumber(0, 0);
                     try self.emitPush();
                 },
@@ -706,6 +729,7 @@ const Fy = struct {
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
+    _ = stdin;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
@@ -718,28 +742,58 @@ pub fn main() !void {
         fy.deinit();
     }
 
+    var editor = Editor.init(allocator, .{});
+    defer editor.deinit();
+
+    var handler: struct {
+        editor: *Editor,
+
+        // pub fn display_refresh(self: *@This()) void {
+        //     self.editor.stripStyles();
+        //     const buf = self.editor.getBuffer();
+        //     for (buf, 0..) |c, i| {
+        //         self.editor.stylize(.{
+        //             .begin = i,
+        //             .end = i + 1,
+        //         }, .{
+        //             .foreground = .{
+        //                 .rgb = [3]u8{
+        //                     @intCast(c % 26 * 10),
+        //                     @intCast(c / 26 * 10),
+        //                     @intCast(c % 10 * 10 + 150),
+        //                 },
+        //             },
+        //         }) catch unreachable;
+        //     }
+        // }
+
+        pub fn paste(self: *@This(), text: []const u32) void {
+            self.editor.insertUtf32(text);
+        }
+    } = .{ .editor = &editor };
+    editor.setHandler(&handler);
+
     try stdout.print("fy! {s}\n", .{Fy.version});
 
     while (true) {
-        try stdout.print("fy> ", .{});
-        const read = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
-        if (read) |line| {
-            if (line.len == 0) {
-                allocator.free(line);
-                continue;
-            }
-            var result = fy.run(line);
+        //try stdout.print("fy> ", .{});
+        //const read = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
+        const line: []const u8 = editor.getLine("fy> ") catch |err| switch (err) {
+            error.Eof => break,
+            else => return err,
+        };
+        defer allocator.free(line);
+        try editor.addToHistory(line);
+        if (line.len == 0) {
             allocator.free(line);
-            if (result) |r| {
-                try stdout.print("    {d}\n", .{r});
-            } else |err| {
-                try stdout.print("error: {}\n", .{err});
-            }
+            continue;
+        }
+        var result = fy.run(line);
+
+        if (result) |r| {
+            try stdout.print("    {d}\n", .{r});
         } else |err| {
-            if (err != error.EndOfStream) {
-                try stdout.print("error: {}\n", .{err});
-            }
-            break;
+            try stdout.print("error: {}\n", .{err});
         }
     }
     return;
@@ -798,6 +852,9 @@ test "Basic expressions and built-in words" {
         .{ .input = "2 3 nip", .expected = 3 },
         .{ .input = "2 3 tuck", .expected = 3 },
         .{ .input = "2 3 drop", .expected = 2 },
+        .{ .input = "2 1+ 4 1- =", .expected = 1 },
+        .{ .input = "depth", .expected = 0 },
+        .{ .input = "5 6 7 8 depth", .expected = 4 },
     });
 }
 
@@ -823,7 +880,10 @@ test "Quotes" {
     defer fy.deinit();
 
     try runCases(&fy, &[_]TestCase{
-        .{ .input = "2 [dup +] do", .expected = 4 },
+        .{
+            .input = "2 [dup +] do", //
+            .expected = 4,
+        },
         .{ .input = "[dup +] 3 swap do", .expected = 6 },
         .{ .input = ":dup+ [dup +]; 5 dup+ do", .expected = 10 },
         .{ .input = "10 dup+ do", .expected = 20 },
@@ -833,5 +893,8 @@ test "Quotes" {
         .{ .input = "5 [4 [spy] dotimes] dotimes", .expected = 0 },
         .{ .input = "100 50 > [5 5 10 > [7] do?] do?", .expected = 5 },
         .{ .input = "2 3 over over < [*] do?", .expected = 6 },
+        .{ .input = "3 dup 1 > [3 *] [3 /] ifte", .expected = 9 },
+        .{ .input = "10 [dup 5 <= [1 .] [0 .] ifte] dotimes", .expected = 0 },
+        .{ .input = "[1 2 3] do + + 1 2 3 + + =", .expected = 1 },
     });
 }
