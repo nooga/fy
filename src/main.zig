@@ -1,5 +1,7 @@
 const std = @import("std");
 const Editor = @import("zigline").Editor;
+const Asm = @import("asm.zig");
+const Args = @import("args.zig");
 
 extern fn __clear_cache(start: usize, end: usize) callconv(.C) void;
 
@@ -30,10 +32,10 @@ fn debugSlice(mem: []u8, len: usize) void {
 const Fy = struct {
     fyalloc: std.mem.Allocator,
     userWords: std.StringHashMap(Word),
-    dataStack: [DATASTACKSIZE]u64 = undefined,
+    dataStack: [DATASTACKSIZE]Value = undefined,
     image: Image,
 
-    const version = "v0.0.0";
+    const version = "v0.0.1";
     const DATASTACKSIZE = 512;
 
     fn init(allocator: std.mem.Allocator) Fy {
@@ -64,104 +66,6 @@ const Fy = struct {
     }
 
     const Value = i64;
-
-    const Asm = struct {
-        const @"str x0, [sp, #-16]!" = 0xf81f0fe0;
-        const @"str x1, [sp, #-16]!" = 0xf81f0fe1;
-        const @"ldr x0, [sp], #16" = 0xf84107e0;
-        const @"ldr x1, [sp], #16" = 0xf84107e1;
-        const @"stp x29, x30, [sp, #0x10]!" = 0xa9bf7bfd;
-        const @"ldp x29, x30, [sp], #0x10" = 0xa8c17bfd;
-
-        const @"stp x0, x1, [x21, #-16]!" = 0xa9bf06a0;
-        const @"ldp x0, x1, [x21], #16" = 0xa8c106a0;
-        const @"stp x1, x0, [x21, #-16]!" = 0xa9bf02a1;
-        const @"ldp x1, x0, [x21], #16" = 0xa8c102a1;
-
-        const @"str x0, [x21, #-8]!" = 0xf81f8ea0;
-        const @"str x1, [x21, #-8]!" = 0xf81f8ea1;
-
-        const @"ldr x0, [x21], #8" = 0xf84086a0;
-        const @"ldr x1, [x21], #8" = 0xf84086a1;
-
-        const @"mov x29, sp" = 0x910003fd;
-        const @"mov sp, x29" = 0x910003bf;
-
-        const @"mov x0, #0" = 0xd2800000;
-        const @"mov x0, #1" = 0xd2800020;
-
-        const @"add x0, x0, x1" = 0x8b010000;
-        const @"sub x0, x1, x0" = 0xcb010000;
-        const @"mul x0, x0, x1" = 0x9b017c00;
-        const @"sdiv x0, x1, x0" = 0x9ac10c00;
-
-        const @"add x0, x0, #1" = 0x91000400;
-        const @"sub x0, x0, #1" = 0xd1000400;
-
-        const @"sub x0, x22, x21" = 0xcb1502c0;
-        const @"asr x0, x0, #3" = 0x9343fc00;
-
-        const @"cbz x0, 0" = 0xb4000000;
-
-        const @"cmp x0, x1" = 0xeb01001f;
-
-        const @"cmp x2, #0" = 0xf100005f;
-        const @"csel x0, x0, x1, ne" = 0x9a811000;
-
-        const @"b 0" = 0x14000000;
-        const @"b 2" = @"b 0" + 2;
-
-        const @"beq #2" = 0x54000060;
-        const @"bne #2" = 0x54000061;
-        const @"bgt #2" = 0x5400006c;
-        const @"blt #2" = 0x5400006b;
-        const @"bge #2" = 0x5400006a;
-        const @"ble #2" = 0x5400006d;
-
-        const @"blr x0" = 0xd63f0000;
-
-        const ret = 0xd65f03c0;
-
-        // pseudo instructions
-
-        // call slot is used to indicate where to put the function call address and is replaced with the actual address
-        const CALLSLOT = 0xffffffff;
-
-        const @".push x0" = @"str x0, [x21, #-8]!"; //@"str x0, [sp, #-16]!";
-        const @".push x1" = @"str x1, [x21, #-8]!"; //@"str x1, [sp, #-16]!";
-        const @".pop x0" = @"ldr x0, [x21], #8"; //@"ldr x0, [sp], #16";
-        const @".pop x1" = @"ldr x1, [x21], #8"; //@"ldr x1, [sp], #16";
-
-        const @".push x0, x1" = @"stp x1, x0, [x21, #-16]!";
-        const @".pop x0, x1" = @"ldp x0, x1, [x21], #16";
-        const @".push x1, x0" = @"stp x0, x1, [x21, #-16]!";
-        const @".pop x1, x0" = @"ldp x1, x0, [x21], #16";
-
-        // register used to store call address: x20
-        const REGCALL = 20;
-
-        // helpers
-        fn @"blr Xn"(n: u5) u32 {
-            return @"blr x0" | @as(u32, @intCast(n)) << 5;
-        }
-
-        fn @"cbz Xn, offset"(n: u5, offset: u19) u32 {
-            return @"cbz x0, 0" | @as(u32, @intCast(n)) | @as(u32, @intCast(offset)) << 5;
-        }
-
-        fn @"b offset"(offset: i26) u32 {
-            //@compileLog("b", offset, @"b 0" | (@as(u32, @bitCast(@as(i32, offset)))) & 0x3ffffff);
-            return @"b 0" | (@as(u32, @bitCast(@as(i32, offset))) & 0x3ffffff);
-        }
-
-        fn @".pop Xn"(n: usize) u32 {
-            return @".pop x0" + @as(u32, @intCast(n));
-        }
-
-        fn @"lsr Xn, Xm, #s"(n: u5, m: u5, s: u6) u32 {
-            return 0x9ac12800 | @as(u32, @intCast(n)) | @as(u32, @intCast(m)) << 5 | @as(u32, @intCast(s)) << 10;
-        }
-    };
 
     const Word = struct {
         code: []const u32, //machine code
@@ -266,6 +170,12 @@ const Fy = struct {
         fn printHex(a: Value) void {
             std.io.getStdOut().writer().print("0x{x}\n", .{a}) catch std.debug.print("0x{x}\n", .{a});
         }
+        fn printNewline() void {
+            std.io.getStdOut().writer().print("\n", .{}) catch std.debug.print("\n", .{});
+        }
+        fn printChar(a: Value) void {
+            std.io.getStdOut().writer().print("{c}", .{@as(u8, @intCast(a))}) catch std.debug.print("{c}", .{@as(u8, @intCast(a))});
+        }
         fn spy(a: Value) Value {
             print(a);
             return a;
@@ -277,8 +187,12 @@ const Fy = struct {
         .{ "+", binOp(Asm.@"add x0, x0, x1", false) },
         // a b -- a-b
         .{ "-", binOp(Asm.@"sub x0, x1, x0", true) },
+        // a b -- a-b
+        .{ "!-", binOp(Asm.@"sub x0, x1, x0", false) },
         // a b -- a*b
         .{ "*", binOp(Asm.@"mul x0, x0, x1", false) },
+        // a b -- a&b
+        .{ "&", binOp(Asm.@"and x0, x0, x1", false) },
         // a b -- a/b
         .{ "/", binOp(Asm.@"sdiv x0, x1, x0", true) },
         .{ "=", cmpOp(Asm.@"beq #2") },
@@ -295,6 +209,14 @@ const Fy = struct {
         .{ "drop", inlineWord(&[_]u32{Asm.@".pop x0"}, 1, 0) },
         // a b -- a b a
         .{ "over", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x1, x0", Asm.@".push x1" }, 2, 3) },
+        // c d a b -- c d a b c d
+        .{ "over2", inlineWord(&[_]u32{
+            Asm.@".pop x0, x1",
+            Asm.@".pop x2, x3",
+            Asm.@".push x2, x3",
+            Asm.@".push x0, x1",
+            Asm.@".push x2, x3",
+        }, 4, 6) },
         // a b -- b
         .{ "nip", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0" }, 2, 1) },
         // a b -- b a b
@@ -303,6 +225,10 @@ const Fy = struct {
         .{ "depth", inlineWord(&[_]u32{ Asm.@"sub x0, x22, x21", Asm.@"asr x0, x0, #3", Asm.@"sub x0, x0, #1", Asm.@".push x0" }, 0, 1) },
         // a --
         .{ ".", fnToWord(Builtins.print) },
+        // --
+        .{ ".nl", fnToWord(Builtins.printNewline) },
+        // a --
+        .{ ".c", fnToWord(Builtins.printChar) },
         // a --
         .{ ".hex", fnToWord(Builtins.printHex) },
         // a -- a
@@ -344,16 +270,25 @@ const Fy = struct {
                 Asm.@"b offset"(-7),
             }, 2, 0),
         },
+        // ... f -- ...
+        // repeat the quote until the top of the stack is 0
+        .{ "repeat", inlineWord(&[_]u32{
+            Asm.@".pop x0",
+            Asm.@"cbz Xn, offset"(0, 2),
+            Asm.@"blr Xn"(0),
+            Asm.@"b offset"(-2),
+        }, 1, 0) },
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
         return self.userWords.get(word) orelse words.get(word);
     }
 
-    // parser
+    // parseromptime c: usize, comptime p: usize
     const Parser = struct {
         code: []const u8,
         pos: usize,
+        autoclose: bool,
 
         const Token = union(enum) {
             Number: Value,
@@ -364,6 +299,7 @@ const Fy = struct {
             return Parser{
                 .code = code,
                 .pos = 0,
+                .autoclose = false,
             };
         }
 
@@ -377,6 +313,10 @@ const Fy = struct {
 
         fn nextToken(self: *Parser) ?Token {
             while (self.pos < self.code.len and isWhitespace(self.code[self.pos])) {
+                if (self.autoclose) {
+                    self.autoclose = false;
+                    return Token{ .Word = Word.QUOTE_END };
+                }
                 self.pos += 1;
             }
             if (self.pos >= self.code.len) {
@@ -384,6 +324,32 @@ const Fy = struct {
             }
             var c = self.code[self.pos];
             const start = self.pos;
+            if (c == '(') {
+                self.pos += 1;
+                var depth: usize = 1;
+                while (self.pos < self.code.len and depth > 0) {
+                    switch (self.code[self.pos]) {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        else => {},
+                    }
+                    self.pos += 1;
+                }
+                if (depth != 0) {
+                    @panic("Unbalanced parentheses in comment");
+                }
+                return self.nextToken();
+            }
+            if (c == '\'') {
+                self.pos += 1;
+                if (self.pos >= self.code.len) {
+                    @panic("Expected character after '\\''");
+                }
+                c = self.code[self.pos];
+                const charValue = @as(Value, c);
+                self.pos += 1;
+                return Token{ .Number = charValue };
+            }
             if (c == ':') {
                 self.pos += 1;
                 return Token{ .Word = Word.DEFINE };
@@ -391,6 +357,11 @@ const Fy = struct {
             if (c == ';') {
                 self.pos += 1;
                 return Token{ .Word = Word.END };
+            }
+            if (c == '\\') {
+                self.pos += 1;
+                self.autoclose = true;
+                return Token{ .Word = Word.QUOTE_OPEN };
             }
             if (c == '[') {
                 self.pos += 1;
@@ -400,11 +371,23 @@ const Fy = struct {
                 self.pos += 1;
                 return Token{ .Word = Word.QUOTE_END };
             }
-            if (isDigit(c)) {
-                while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
+            if (isDigit(c) or c == '-') {
+                var negative = false;
+                var number = true;
+                if (c == '-') {
+                    negative = true;
                     self.pos += 1;
+                    if (self.pos >= self.code.len or !isDigit(self.code[self.pos])) {
+                        number = false;
+                    }
                 }
-                return Token{ .Number = std.fmt.parseInt(Value, self.code[start..self.pos], 10) catch 2137 };
+
+                if (number) {
+                    while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
+                        self.pos += 1;
+                    }
+                    return Token{ .Number = std.fmt.parseInt(Value, self.code[start..self.pos], 10) catch 2137 };
+                }
             }
             while (self.pos < self.code.len and !isWhitespace(self.code[self.pos]) and self.code[self.pos] != ';' and self.code[self.pos] != ']') {
                 self.pos += 1;
@@ -637,9 +620,14 @@ const Fy = struct {
         }
     };
 
+    // const TableEntry = struct {
+    //     length: usize,
+    // };
+
     const Image = struct {
         mem: []align(std.mem.page_size) u8,
         end: usize,
+        // table: std.AutoHashMap(usize, TableEntry),
 
         fn init() !Image {
             const mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
@@ -686,6 +674,10 @@ const Fy = struct {
             //debugSlice(self.mem[new..self.end], self.end - new);
             return self.mem[new..self.end];
         }
+
+        fn reset(self: *Image) void {
+            self.end = 0;
+        }
     };
 
     const Fn = struct {
@@ -709,6 +701,7 @@ const Fy = struct {
         if (code) |c| {
             var fyfn = try self.jit(c);
             const x = fyfn.call();
+            //self.image.reset();
             return x;
         } else |err| {
             return err;
@@ -726,47 +719,13 @@ const Fy = struct {
     }
 };
 
-pub fn main() !void {
+pub fn repl(allocator: std.mem.Allocator, fy: *Fy) !void {
     const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
-    _ = stdin;
-
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
-    defer {
-        _ = gpa.deinit();
-    }
-
-    var fy = Fy.init(allocator);
-    defer {
-        fy.deinit();
-    }
-
     var editor = Editor.init(allocator, .{});
     defer editor.deinit();
 
     var handler: struct {
         editor: *Editor,
-
-        // pub fn display_refresh(self: *@This()) void {
-        //     self.editor.stripStyles();
-        //     const buf = self.editor.getBuffer();
-        //     for (buf, 0..) |c, i| {
-        //         self.editor.stylize(.{
-        //             .begin = i,
-        //             .end = i + 1,
-        //         }, .{
-        //             .foreground = .{
-        //                 .rgb = [3]u8{
-        //                     @intCast(c % 26 * 10),
-        //                     @intCast(c / 26 * 10),
-        //                     @intCast(c % 10 * 10 + 150),
-        //                 },
-        //             },
-        //         }) catch unreachable;
-        //     }
-        // }
-
         pub fn paste(self: *@This(), text: []const u32) void {
             self.editor.insertUtf32(text);
         }
@@ -776,8 +735,6 @@ pub fn main() !void {
     try stdout.print("fy! {s}\n", .{Fy.version});
 
     while (true) {
-        //try stdout.print("fy> ", .{});
-        //const read = stdin.readUntilDelimiterAlloc(allocator, '\n', 1024);
         const line: []const u8 = editor.getLine("fy> ") catch |err| switch (err) {
             error.Eof => break,
             else => return err,
@@ -789,12 +746,89 @@ pub fn main() !void {
             continue;
         }
         var result = fy.run(line);
-
         if (result) |r| {
             try stdout.print("    {d}\n", .{r});
         } else |err| {
             try stdout.print("error: {}\n", .{err});
         }
+    }
+    return;
+}
+
+pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    const stat = try file.stat();
+    const fileSize = stat.size;
+    var src = try file.reader().readAllAlloc(allocator, fileSize);
+    var result = fy.run(src);
+    allocator.free(src);
+    if (result) |_| {
+        //std.debug.print("{d}\n", .{r});
+    } else |err| {
+        std.debug.print("error: {}\n", .{err});
+    }
+}
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+    defer {
+        _ = gpa.deinit();
+    }
+
+    var argIt = try std.process.ArgIterator.initWithAllocator(allocator);
+    _ = argIt.skip(); // skip the program name
+    var parsedArgs = try Args.parseArgs(allocator, &argIt);
+    defer {
+        parsedArgs.deinit();
+        argIt.deinit();
+    }
+
+    if (parsedArgs.help) {
+        std.debug.print("Usage: fy [options] [files]\n", .{});
+        std.debug.print("Options:\n", .{});
+        std.debug.print("  -e, --eval <expr>  Evaluate expr\n", .{});
+        std.debug.print("  -r, --repl         Launch interactive REPL\n", .{});
+        std.debug.print("  -v, --version      Display version and exit\n", .{});
+        std.debug.print("  -h, --help         Display this help and exit\n", .{});
+        return;
+    }
+
+    if (parsedArgs.version) {
+        std.debug.print("fy {s}\n", .{Fy.version});
+        return;
+    }
+
+    if (parsedArgs.eval == null and parsedArgs.files == 0) {
+        parsedArgs.repl = true;
+    }
+
+    var fy = Fy.init(allocator);
+    defer {
+        fy.deinit();
+    }
+
+    if (parsedArgs.files > 0) {
+        for (parsedArgs.other_args.items) |file| {
+            std.debug.print("file: {s}\n", .{file});
+            try runFile(allocator, &fy, file);
+        }
+    }
+
+    if (parsedArgs.eval) |e| {
+        std.debug.print("eval: '{s}'\n", .{e});
+        var result = fy.run(e);
+        if (result) |r| {
+            std.debug.print("{d}\n", .{r});
+        } else |err| {
+            std.debug.print("error: {}\n", .{err});
+        }
+    }
+
+    if (parsedArgs.repl) {
+        std.debug.print("repl\n", .{});
+        return repl(allocator, &fy);
     }
     return;
 }
@@ -827,11 +861,16 @@ test "Basic expressions and built-in words" {
     try runCases(&fy, &[_]TestCase{
         .{ .input = "", .expected = 0 }, //
         .{ .input = "1", .expected = 1 },
+        .{ .input = "-1", .expected = -1 },
         .{ .input = "1 2", .expected = 2 },
         .{ .input = "1 2 +", .expected = 3 },
+        .{ .input = "10 -10 +", .expected = 0 },
+        .{ .input = "-5 0 - 6 +", .expected = 1 },
         .{ .input = "1 2 -", .expected = -1 },
+        .{ .input = "1 2 !-", .expected = 1 },
         .{ .input = "2 2 *", .expected = 4 },
         .{ .input = "12 3 /", .expected = 4 },
+        .{ .input = "12 5 &", .expected = 4 },
         .{ .input = "1 2 =", .expected = 0 },
         .{ .input = "1 1 =", .expected = 1 },
         .{ .input = "1 2 !=", .expected = 1 },
@@ -849,6 +888,7 @@ test "Basic expressions and built-in words" {
         .{ .input = "2 dup", .expected = 2 },
         .{ .input = "2 3 swap", .expected = 2 },
         .{ .input = "2 3 over", .expected = 2 },
+        .{ .input = "2 3 4 5 over2", .expected = 3 },
         .{ .input = "2 3 nip", .expected = 3 },
         .{ .input = "2 3 tuck", .expected = 3 },
         .{ .input = "2 3 drop", .expected = 2 },
@@ -876,7 +916,6 @@ test "User defined words" {
 
 test "Quotes" {
     var fy = Fy.init(std.testing.allocator);
-    std.debug.print("\nmem base: {*}\n", .{fy.image.mem.ptr});
     defer fy.deinit();
 
     try runCases(&fy, &[_]TestCase{
@@ -896,5 +935,51 @@ test "Quotes" {
         .{ .input = "3 dup 1 > [3 *] [3 /] ifte", .expected = 9 },
         .{ .input = "10 [dup 5 <= [1 .] [0 .] ifte] dotimes", .expected = 0 },
         .{ .input = "[1 2 3] do + + 1 2 3 + + =", .expected = 1 },
+        .{ .input = "2 3 \\* do", .expected = 6 },
+    });
+}
+
+test "Print functions compile" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    _ = try fy.run("1 ."); // Test print
+    _ = try fy.run("1 .hex"); // Test printHex
+    _ = try fy.run("1 . .nl 2 ."); // Test printNewline
+    _ = try fy.run("65 .c .nl"); // Test printChar
+    _ = try fy.run("1 spy"); // Test spy
+}
+
+test "Comments are ignored" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "( Comment before code ) 1 2 +", .expected = 3 },
+        .{ .input = "1 2 + ( Comment ) ( Another comment )", .expected = 3 },
+        .{ .input = "1 ( Comment ) 2 +", .expected = 3 },
+        .{ .input = "(Comment before code) 1 2 +", .expected = 3 },
+        .{ .input = "1 2 + ( Co(mm)ent ) (Another comment )", .expected = 3 },
+        .{ .input = "1 ( Comment) 2 +", .expected = 3 },
+    });
+}
+
+test "Character literals" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "'a", .expected = 'a' },
+        .{ .input = "'b 'c +", .expected = 'b' + 'c' },
+        .{ .input = "'0 '9 +", .expected = '0' + '9' },
+        .{ .input = "'x 'y swap", .expected = 'x' },
+        .{ .input = "'z 1 +", .expected = 'z' + 1 },
+        .{ .input = "'a 'a =", .expected = 1 },
+        .{ .input = "'a 'b !=", .expected = 1 },
+        .{ .input = "'m 'n >", .expected = 0 },
+        .{ .input = "'p 'o <", .expected = 0 },
+        .{ .input = "''", .expected = '\'' },
+        .{ .input = "' ' drop", .expected = ' ' },
+        .{ .input = "'a'b swap", .expected = 'a' },
     });
 }
