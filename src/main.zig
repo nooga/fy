@@ -628,7 +628,6 @@ const Fy = struct {
         mem: []align(std.mem.page_size) u8,
         end: usize,
         // table: std.AutoHashMap(usize, TableEntry),
-
         fn init() !Image {
             // flags: std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS = 3
             const mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
@@ -772,6 +771,13 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
     }
 }
 
+pub fn dumpImage(fy: *Fy) !void {
+    const path = "fy.out";
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+    _ = try file.write(fy.image.mem);
+}
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
@@ -792,6 +798,7 @@ pub fn main() !void {
         std.debug.print("Options:\n", .{});
         std.debug.print("  -e, --eval <expr>  Evaluate expr\n", .{});
         std.debug.print("  -r, --repl         Launch interactive REPL\n", .{});
+        std.debug.print("  -i, --image        Dump executable memory image to fy.out\n", .{});
         std.debug.print("  -v, --version      Display version and exit\n", .{});
         std.debug.print("  -h, --help         Display this help and exit\n", .{});
         return;
@@ -831,6 +838,10 @@ pub fn main() !void {
     if (parsedArgs.repl) {
         std.debug.print("repl\n", .{});
         return repl(allocator, &fy);
+    }
+
+    if (parsedArgs.image) {
+        try dumpImage(&fy);
     }
     return;
 }
