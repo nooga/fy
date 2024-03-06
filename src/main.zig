@@ -180,6 +180,18 @@ const Fy = struct {
             print(a);
             return a;
         }
+        fn spyStack(base: Value, end: Value) void {
+            const w = std.io.getStdOut().writer();
+            const p: [*]Value = @ptrFromInt(@as(usize, @intCast(base)));
+            const l: usize = @intCast(end - base);
+            const len: usize = l / @sizeOf(Value);
+            const s: []Value = p[0..len];
+            w.print("--| ", .{}) catch std.debug.print("--| ", .{});
+            for (2..len + 1) |v| {
+                w.print("{d} ", .{s[len - v]}) catch std.debug.print("{d} ", .{s[len - v]});
+            }
+            w.print("\n", .{}) catch std.debug.print("\n", .{});
+        }
     };
 
     const words = std.ComptimeStringMap(Word, .{
@@ -233,6 +245,13 @@ const Fy = struct {
         .{ ".hex", fnToWord(Builtins.printHex) },
         // a -- a
         .{ "spy", fnToWord(Builtins.spy) },
+        // --
+        .{ ".dbg", .{
+            .code = &[_]u32{ Asm.@"mov x0, x21", Asm.@"mov x1, x22", Asm.CALLSLOT },
+            .c = 0,
+            .p = 0,
+            .callSlot = @as(*const void, @ptrCast(&Builtins.spyStack)),
+        } },
         // a -- a + 1
         .{ "1+", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"add x0, x0, #1", Asm.@".push x0" }, 1, 1) },
         // a -- a - 1

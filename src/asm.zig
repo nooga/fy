@@ -12,6 +12,9 @@ pub const @"ldp x1, x0, [x21], #16" = 0xa8c102a1;
 pub const @"stp x2, x3, [x21, #-16]!" = 0xa9bf0ea2;
 pub const @"ldp x2, x3, [x21], #16" = 0xa8c10ea2;
 
+pub const @"mov x0, x21" = 0xaa1503e0;
+pub const @"mov x1, x22" = 0xaa1603e1;
+
 pub const @"str x0, [x21, #-8]!" = 0xf81f8ea0;
 pub const @"str x1, [x21, #-8]!" = 0xf81f8ea1;
 
