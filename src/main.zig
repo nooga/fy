@@ -528,12 +528,12 @@ const Fy = struct {
         };
 
         fn compileDefinition(self: *Compiler) Error!void {
-            var name = self.parser.nextToken();
+            const name = self.parser.nextToken();
             if (name) |n| {
                 switch (n) {
                     .Word => |w| {
                         var compiler = Compiler.init(self.fy, self.parser);
-                        var code = try compiler.compile(.None);
+                        const code = try compiler.compile(.None);
 
                         try self.defineWord(w, code);
                     },
@@ -548,7 +548,7 @@ const Fy = struct {
 
         fn compileQuote(self: *Compiler) Error!u64 {
             var compiler = Compiler.init(self.fy, self.parser);
-            var code = try compiler.compile(.Quote);
+            const code = try compiler.compile(.Quote);
             const executable = self.fy.image.link(code);
             compiler.fy.fyalloc.free(code);
             return @intFromPtr(executable.ptr);
@@ -630,7 +630,8 @@ const Fy = struct {
         // table: std.AutoHashMap(usize, TableEntry),
 
         fn init() !Image {
-            const mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            // flags: std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS = 3
+            const mem = try std.os.mmap(null, std.mem.page_size, std.os.PROT.READ | std.os.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
             return Image{
                 .mem = mem,
                 .end = 0,
@@ -644,7 +645,8 @@ const Fy = struct {
         fn grow(self: *Image) !void {
             const oldlen = self.mem.len;
             const newlen = oldlen + std.mem.page_size;
-            var new = try std.os.mmap(null, newlen, std.os.PROT.READ | std.os.PROT.WRITE, std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS, -1, 0);
+            // flags: std.os.MAP.PRIVATE | std.os.MAP.ANONYMOUS = 3
+            const new = try std.os.mmap(null, newlen, std.os.PROT.READ | std.os.PROT.WRITE, .{ .TYPE = .PRIVATE, .ANONYMOUS = true }, -1, 0);
             @memcpy(new, self.mem);
             std.os.munmap(self.mem);
             self.mem = new;
@@ -689,14 +691,14 @@ const Fy = struct {
         // free the original code buffer as we already have machine code in executable memory
         self.fyalloc.free(code);
         // cast the memory to a function pointer and call
-        var fun: *const fn () Value = @alignCast(@ptrCast(executable));
+        const fun: *const fn () Value = @alignCast(@ptrCast(executable));
         return Fn{ .call = fun };
     }
 
     fn run(self: *Fy, src: []const u8) !Fy.Value {
         var parser = Fy.Parser.init(src);
         var compiler = Fy.Compiler.init(self, &parser);
-        var code = compiler.compileFn();
+        const code = compiler.compileFn();
 
         if (code) |c| {
             var fyfn = try self.jit(c);
@@ -745,7 +747,7 @@ pub fn repl(allocator: std.mem.Allocator, fy: *Fy) !void {
             allocator.free(line);
             continue;
         }
-        var result = fy.run(line);
+        const result = fy.run(line);
         if (result) |r| {
             try stdout.print("    {d}\n", .{r});
         } else |err| {
@@ -760,8 +762,8 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
     defer file.close();
     const stat = try file.stat();
     const fileSize = stat.size;
-    var src = try file.reader().readAllAlloc(allocator, fileSize);
-    var result = fy.run(src);
+    const src = try file.reader().readAllAlloc(allocator, fileSize);
+    const result = fy.run(src);
     allocator.free(src);
     if (result) |_| {
         //std.debug.print("{d}\n", .{r});
@@ -772,7 +774,7 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
+    const allocator = gpa.allocator();
     defer {
         _ = gpa.deinit();
     }
@@ -818,7 +820,7 @@ pub fn main() !void {
 
     if (parsedArgs.eval) |e| {
         std.debug.print("eval: '{s}'\n", .{e});
-        var result = fy.run(e);
+        const result = fy.run(e);
         if (result) |r| {
             std.debug.print("{d}\n", .{r});
         } else |err| {
@@ -841,8 +843,8 @@ const TestCase = struct {
 
     fn run(self: *const TestCase, fy: *Fy) !void {
         std.debug.print("\nfy> {s}\n", .{self.input});
-        var input = self.input;
-        var result = try fy.run(input);
+        const input = self.input;
+        const result = try fy.run(input);
         std.debug.print("exp {d}\n    {d}\n", .{ self.expected, result });
         try std.testing.expectEqual(self.expected, result);
     }
