@@ -1,9 +1,8 @@
 :N 16;
-N [
-dup N !- 2 / [' .c ' .c] dotimes
+N [  dup [' .c] dotimes
 N [
     dup
-    over2 drop N !-
+    over2 drop 1 -
     swap N !-
     &
     \'  \'* ifte .c

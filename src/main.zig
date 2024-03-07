@@ -781,7 +781,16 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
     const stat = try file.stat();
     const fileSize = stat.size;
     const src = try file.reader().readAllAlloc(allocator, fileSize);
-    const result = fy.run(src);
+    var cleanSrc = src;
+    // get rid of shebang from src if present
+    if (src.len > 2 and src[0] == '#' and src[1] == '!') {
+        var i: usize = 2;
+        while (i < src.len and src[i] != '\n') {
+            i += 1;
+        }
+        cleanSrc = src[i..];
+    }
+    const result = fy.run(cleanSrc);
     allocator.free(src);
     if (result) |_| {
         //std.debug.print("{d}\n", .{r});
@@ -839,13 +848,13 @@ pub fn main() !void {
 
     if (parsedArgs.files > 0) {
         for (parsedArgs.other_args.items) |file| {
-            std.debug.print("file: {s}\n", .{file});
+            //std.debug.print("file: {s}\n", .{file});
             try runFile(allocator, &fy, file);
         }
     }
 
     if (parsedArgs.eval) |e| {
-        std.debug.print("eval: '{s}'\n", .{e});
+        //std.debug.print("eval: '{s}'\n", .{e});
         const result = fy.run(e);
         if (result) |r| {
             std.debug.print("{d}\n", .{r});
@@ -855,7 +864,7 @@ pub fn main() !void {
     }
 
     if (parsedArgs.repl) {
-        std.debug.print("repl\n", .{});
+        //std.debug.print("repl\n", .{});
         return repl(allocator, &fy);
     }
 
