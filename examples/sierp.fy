@@ -1,10 +1,10 @@
 :N 16;
-N [ dup                         (y) 
+N [ dup                         (y)
     [' .c] dotimes              (print padding)
     N [ dup                     (x)
-        over2 drop 1-           (y' = y - 1)
+        over2 drop .dbg 1-           (y' = y - 1)
         swap N !-               (x' = N - x)
         &                       (x' & y')
-        \'  \'* ifte .c ' .c ]  (print * or space)
-    dotimes .nl]       
+        \'  \'* ifte .c ' .c .dbg]  (print * or space)
+    dotimes .nl]
 dotimes

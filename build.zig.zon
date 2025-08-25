@@ -4,8 +4,8 @@
     .paths = .{ "src/", "build.zig", "build.zig.zon" },
     .dependencies = .{ //
         .zigline = .{
-            .url = "https://github.com/alimpfard/zigline/archive/e18781dbc559e9a7aa3d6fa327335815803306dc.tar.gz",
-            .hash = "12208f21bd7d85021b7d8d191e8c0114871cde63cc7d1056a8b4d7805fe8fc1b85a2",
+            .url = "https://github.com/alimpfard/zigline/archive/501d068514215bcad2e0bbf2449873558d313741.zip",
+            .hash = "1220391df38627008551e1f35da79f959fdc58f2643c306d69ec6b1343f936d71361",
         },
     },
 }
