@@ -4,6 +4,8 @@ pub const @"ldr x0, [sp], #16" = 0xf84107e0;
 pub const @"ldr x1, [sp], #16" = 0xf84107e1;
 pub const @"stp x29, x30, [sp, #0x10]!" = 0xa9bf7bfd;
 pub const @"ldp x29, x30, [sp], #0x10" = 0xa8c17bfd;
+pub const @"stp x21, x22, [sp, #0x10]!" = 0xa9bf5bf5;
+pub const @"ldp x21, x22, [sp], #0x10" = 0xa8c15bf5;
 pub const @"stp x1, x2, [sp, #-16]!" = 0xa9bf02e1;
 pub const @"ldp x2, x3, [sp], #16" = 0xa8c106e2;
 
@@ -16,10 +18,31 @@ pub const @"ldp x2, x3, [x21], #16" = 0xa8c10ea2;
 
 pub const @"mov x0, x21" = 0xaa1503e0;
 pub const @"mov x1, x22" = 0xaa1603e1;
-pub const @"mov x21, x0" = 0xaa0003b5;
+pub const @"mov x0, x22" = 0xaa1603e0;
+pub const @"mov x21, x0" = 0xaa0003f5;
+pub const @"mov x22, x0" = 0xaa0003f6;
+pub const @"mov x1, x21" = 0xaa1503e1;
+pub const @"mov x21, x1" = 0xaa0103f5;
+pub const @"mov x22, x2" = 0xaa0203f6;
+pub const @"mov x16, x0" = 0xaa0003f0;
+pub const @"mov x2, x21" = 0xaa1503e2;
+pub const @"mov x3, x22" = 0xaa1603e3;
+pub const @"mov x3, x21" = 0xaa1503e3;
+pub const @"mov x4, x22" = 0xaa1603e4;
 
 pub const @"mov x0, x1" = 0xaa0103e0;
 pub const @"mov x1, x0" = 0xaa0003e1;
+pub const @"mov x0, x2" = 0xaa0203e0;
+pub const @"mov x1, x2" = 0xaa0203e1;
+pub const @"mov x2, x0" = 0xaa0003e2;
+pub const @"mov x2, x1" = 0xaa0103e2;
+pub const @"mov x0, x3" = 0xaa0303e0;
+pub const @"mov x0, x4" = 0xaa0403e0;
+pub const @"mov x0, x5" = 0xaa0503e0;
+pub const @"mov x4, x0" = 0xaa0003e4;
+pub const @"mov x5, x0" = 0xaa0003e5;
+pub const @"mov x3, x0" = 0xaa0003e3;
+pub const @"mov x4, x2" = 0xaa0203e4;
 
 pub const @"str x0, [x21, #-8]!" = 0xf81f8ea0;
 pub const @"str x1, [x21, #-8]!" = 0xf81f8ea1;
@@ -71,14 +94,19 @@ pub const ret = 0xd65f03c0;
 // pseudo instructions
 
 // call slot is used to indicate where to put the function call address and is replaced with the actual address
-pub const CALLSLOT = 0xffffffff;
-// recur is used to jump to the beginning of the word in emit site
+pub const CALLSLOT0 = 0xffffffff; // default call slot
 pub const RECUR = 0xfffffffe;
+pub const CALLSLOT3 = 0xfffffffb;
+
+// Backward-compat alias
+pub const CALLSLOT = CALLSLOT0;
 
 pub const @".push x0" = @"str x0, [x21, #-8]!"; //@"str x0, [sp, #-16]!";
 pub const @".push x1" = @"str x1, [x21, #-8]!"; //@"str x1, [sp, #-16]!";
+pub const @".push x2" = 0xf81f8ea2; // str x2, [x21, #-8]!
 pub const @".pop x0" = @"ldr x0, [x21], #8"; //@"ldr x0, [sp], #16";
 pub const @".pop x1" = @"ldr x1, [x21], #8"; //@"ldr x1, [sp], #16";
+pub const @".pop x2" = 0xf84086a2; // ldr x2, [x21], #8
 
 pub const @".push x0, x1" = @"stp x1, x0, [x21, #-16]!";
 pub const @".pop x0, x1" = @"ldp x0, x1, [x21], #16";
@@ -93,8 +121,8 @@ pub const @".rpush x1" = @"str x1, [sp, #-16]!";
 pub const @".rpop x0" = @"ldr x0, [sp], #16";
 pub const @".rpop x1" = @"ldr x1, [sp], #16";
 
-// register used to store call address: x20
-pub const REGCALL = 20;
+// register used to store call address: use x16 (caller-saved) for PLT/IP0
+pub const REGCALL = 16;
 
 // helpers
 pub fn @"blr Xn"(n: u5) u32 {
@@ -107,6 +135,12 @@ pub fn @"cbz Xn, offset"(n: u5, offset: u19) u32 {
 
 pub fn @"cbnz Xn, offset"(n: u5, offset: u19) u32 {
     return 0xb5000000 | @as(u32, @intCast(n)) | @as(u32, @intCast(offset)) << 5;
+}
+
+/// BL imm26 -- branch with link, PC-relative, ±128MB range
+/// offset is in instruction words (4 bytes each), not bytes
+pub fn @"bl offset"(offset: i26) u32 {
+    return 0x94000000 | (@as(u32, @bitCast(@as(i32, offset))) & 0x3ffffff);
 }
 
 pub fn @"b offset"(offset: i26) u32 {
@@ -124,4 +158,27 @@ pub fn @".push Xn"(n: usize) u32 {
 
 pub fn @"lsr Xn, Xm, #s"(n: u5, m: u5, s: u6) u32 {
     return 0x9ac12800 | @as(u32, @intCast(n)) | @as(u32, @intCast(m)) << 5 | @as(u32, @intCast(s)) << 10;
+}
+
+// SP-relative helpers for locals frames
+// Reserve a stack frame: sub sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)
+pub fn sub_sp_imm(imm: u12) u32 {
+    return 0xd1000000 | (@as(u32, imm) << 10) | (31 << 5) | 31;
+}
+
+// Release a stack frame: add sp, sp, #imm (imm must be a multiple of 16, imm <= 4095)
+pub fn add_sp_imm(imm: u12) u32 {
+    return 0x91000000 | (@as(u32, imm) << 10) | (31 << 5) | 31;
+}
+
+// STR X0, [SP, #offset] where offset is in bytes and must be a multiple of 8 (max 32760)
+pub fn str_sp_x0(offset_bytes: u32) u32 {
+    const imm12: u32 = @as(u32, offset_bytes >> 3);
+    return 0xf9000000 | (imm12 << 10) | (31 << 5) | 0; // Rt=x0, Rn=SP(31)
+}
+
+// LDR X0, [SP, #offset] where offset is in bytes and must be a multiple of 8 (max 32760)
+pub fn ldr_sp_x0(offset_bytes: u32) u32 {
+    const imm12: u32 = @as(u32, offset_bytes >> 3);
+    return 0xf9400000 | (imm12 << 10) | (31 << 5) | 0; // Rt=x0, Rn=SP(31)
 }

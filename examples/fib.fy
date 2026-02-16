@@ -1,9 +1,13 @@
+( Fibonacci using self-recursion inside a quote-aware loop )
+( Push n and call `fibonacci` to print the nth Fibonacci number )
+
 : fibonacci
-  0 1 swap        ( Initialize F0 and F1 )
-  [ over over +   ( Calculate next Fibonacci number )
-    swap 1 - dup 2 >
-  ] repeat
-  drop nip        ( Clean up the stack )
+  dup 1 <= [ drop 1 ]
+  [ dup 2 = [ drop 1 ]
+    [ dup 1 - fibonacci
+      swap 2 - fibonacci +
+    ] ifte
+  ] ifte
 ;
 
 10 fibonacci .
