@@ -182,3 +182,46 @@ pub fn ldr_sp_x0(offset_bytes: u32) u32 {
     const imm12: u32 = @as(u32, offset_bytes >> 3);
     return 0xf9400000 | (imm12 << 10) | (31 << 5) | 0; // Rt=x0, Rn=SP(31)
 }
+
+// MOV Xd, Xn (register-to-register move, alias for ORR Xd, XZR, Xn)
+pub fn @"mov Xd, Xn"(d: u5, n: u5) u32 {
+    return 0xaa0003e0 | @as(u32, d) | (@as(u32, n) << 16);
+}
+
+// --- Floating-point register instructions ---
+
+// FMOV Dd, Xn — move 64-bit general register to double-precision float register
+// Encoding: 0x9E670000 | Rn<<5 | Rd
+pub fn @"fmov Dd, Xn"(d: u5, n: u5) u32 {
+    return 0x9E670000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FMOV Xd, Dn — move double-precision float register to 64-bit general register
+// Encoding: 0x9E660000 | Rn<<5 | Rd
+pub fn @"fmov Xd, Dn"(d: u5, n: u5) u32 {
+    return 0x9E660000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FMOV Sd, Wn — move 32-bit general register to single-precision float register
+// Encoding: 0x1E270000 | Rn<<5 | Rd
+pub fn @"fmov Sd, Wn"(d: u5, n: u5) u32 {
+    return 0x1E270000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FMOV Wd, Sn — move single-precision float register to 32-bit general register
+// Encoding: 0x1E260000 | Rn<<5 | Rd
+pub fn @"fmov Wd, Sn"(d: u5, n: u5) u32 {
+    return 0x1E260000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FCVT Sd, Dn — convert double to single-precision
+// Encoding: 0x1E624000 | Rn<<5 | Rd
+pub fn @"fcvt Sd, Dn"(d: u5, n: u5) u32 {
+    return 0x1E624000 | @as(u32, d) | (@as(u32, n) << 5);
+}
+
+// FCVT Dd, Sn — convert single to double-precision
+// Encoding: 0x1E22C000 | Rn<<5 | Rd
+pub fn @"fcvt Dd, Sn"(d: u5, n: u5) u32 {
+    return 0x1E22C000 | @as(u32, d) | (@as(u32, n) << 5);
+}

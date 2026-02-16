@@ -55,6 +55,7 @@ inline fn outPrint(comptime fmt: []const u8, args: anytype) void {
 const Fy = struct {
     fyalloc: std.mem.Allocator,
     userWords: std.StringHashMap(Word),
+    importedFiles: std.StringHashMap(void),
     data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
     data_stack_top: usize = 0, // x21/x22 init value = top of usable region
     tramp_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
@@ -111,10 +112,19 @@ const Fy = struct {
         return @intCast(biased);
     }
 
+    fn makeFloat(f: f64) Value {
+        return @bitCast(f);
+    }
+
+    fn getFloat(v: Value) f64 {
+        return @bitCast(v);
+    }
+
     fn init(allocator: std.mem.Allocator) Fy {
         const image = Image.init() catch @panic("failed to allocate image");
         var fy = Fy{
             .userWords = std.StringHashMap(Word).init(allocator),
+            .importedFiles = std.StringHashMap(void).init(allocator),
             .fyalloc = allocator,
             .image = image,
             .heap = Heap.init(allocator),
@@ -127,6 +137,7 @@ const Fy = struct {
         self.image.deinit();
         self.heap.deinit();
         deinitUserWords(self);
+        self.deinitImportedFiles();
         self.deinitStacks();
         // Reset cached adapter pointers — they point into our (now-freed) image
         Builtins.adapt1 = null;
@@ -218,6 +229,14 @@ const Fy = struct {
         self.userWords.deinit();
     }
 
+    fn deinitImportedFiles(self: *Fy) void {
+        var keys = self.importedFiles.keyIterator();
+        while (keys.next()) |k| {
+            self.fyalloc.free(k.*);
+        }
+        self.importedFiles.deinit();
+    }
+
     // Render a Value to any writer in a human-friendly way.
     fn writeValue(self: *Fy, writer: anytype, v: Value) !void {
         if (isStr(v)) {
@@ -246,6 +265,7 @@ const Fy = struct {
             first = false;
             switch (it) {
                 .Number => |n| try writer.print("{d}", .{n}),
+                .Float => |f| try writer.print("{d}", .{f}),
                 .Word => |w| try writer.print("{s}", .{w}),
                 .String => |s| try writer.print("\"{s}\"", .{s}),
                 .Quote => |nested| try self.writeQuote(writer, nested),
@@ -260,6 +280,7 @@ const Fy = struct {
 
         const Item = union(enum) {
             Number: i64,
+            Float: f64,
             Word: []u8,
             String: []u8,
             Quote: Value, // nested quote as heap ref
@@ -572,6 +593,7 @@ const Fy = struct {
             // copy items from qa
             for (qa.items.items) |it| switch (it) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
                 .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
                 .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
                 .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
@@ -579,6 +601,7 @@ const Fy = struct {
             // copy items from qb
             for (qb.items.items) |it2| switch (it2) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
                 .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
                 .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
                 .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
@@ -605,6 +628,7 @@ const Fy = struct {
         fn itemToValue(fy: *Fy, it: Heap.Item) Value {
             return switch (it) {
                 .Number => |n| makeInt(n),
+                .Float => |f| makeFloat(f),
                 .String => |s| fy.heap.storeString(s) catch @panic("store string failed"),
                 .Quote => |qv| qv,
                 .Word => |w| blk: {
@@ -635,6 +659,7 @@ const Fy = struct {
             items.ensureTotalCapacity(qq.items.items.len - 1) catch @panic("oom");
             for (qq.items.items[1..]) |it| switch (it) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
                 .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
                 .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
                 .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
@@ -651,6 +676,7 @@ const Fy = struct {
             items.ensureTotalCapacity(qq.items.items.len + 1) catch @panic("oom");
             for (qq.items.items) |it| switch (it) {
                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
                 .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
                 .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
                 .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
@@ -1050,6 +1076,46 @@ const Fy = struct {
             return makeInt(@as(i64, @intFromBool(t == null)));
         }
 
+        // Float builtins — floats are f64 bitcast into i64 Value
+        fn floatAdd(b: Value, a: Value) Value {
+            return makeFloat(getFloat(a) + getFloat(b));
+        }
+        fn floatSub(b: Value, a: Value) Value {
+            return makeFloat(getFloat(a) - getFloat(b));
+        }
+        fn floatMul(b: Value, a: Value) Value {
+            return makeFloat(getFloat(a) * getFloat(b));
+        }
+        fn floatDiv(b: Value, a: Value) Value {
+            return makeFloat(getFloat(a) / getFloat(b));
+        }
+        fn floatLt(b: Value, a: Value) Value {
+            return makeInt(@as(i64, @intFromBool(getFloat(a) < getFloat(b))));
+        }
+        fn floatGt(b: Value, a: Value) Value {
+            return makeInt(@as(i64, @intFromBool(getFloat(a) > getFloat(b))));
+        }
+        fn floatEq(b: Value, a: Value) Value {
+            return makeInt(@as(i64, @intFromBool(getFloat(a) == getFloat(b))));
+        }
+        fn intToFloat(a: Value) Value {
+            return makeFloat(@as(f64, @floatFromInt(getInt(a))));
+        }
+        fn floatToInt(a: Value) Value {
+            return makeInt(@as(i64, @intFromFloat(getFloat(a))));
+        }
+        fn floatPrint(a: Value) void {
+            const f = getFloat(a);
+            if (f == @trunc(f) and !std.math.isNan(f) and !std.math.isInf(f)) {
+                outPrint("{d}.0\n", .{@as(i64, @intFromFloat(f))});
+            } else {
+                outPrint("{d}\n", .{f});
+            }
+        }
+        fn floatNeg(a: Value) Value {
+            return makeFloat(-getFloat(a));
+        }
+
         // Resolve a callable: if int pointer, return as-is; if quote, JIT and cache
         fn resolveCallable(v: Value) Value {
             if (isInt(v)) return v;
@@ -1430,6 +1496,19 @@ const Fy = struct {
         .{ "string?", fnToWord(Builtins.isString) }, // Check if value is string
         .{ "int?", fnToWord(Builtins.isInteger) }, // Check if value is integer
 
+        // Float arithmetic and conversion
+        .{ "f+", fnToWord(Builtins.floatAdd) },
+        .{ "f-", fnToWord(Builtins.floatSub) },
+        .{ "f*", fnToWord(Builtins.floatMul) },
+        .{ "f/", fnToWord(Builtins.floatDiv) },
+        .{ "f<", fnToWord(Builtins.floatLt) },
+        .{ "f>", fnToWord(Builtins.floatGt) },
+        .{ "f=", fnToWord(Builtins.floatEq) },
+        .{ "fneg", fnToWord(Builtins.floatNeg) },
+        .{ "i>f", fnToWord(Builtins.intToFloat) },
+        .{ "f>i", fnToWord(Builtins.floatToInt) },
+        .{ "f.", fnToWord(Builtins.floatPrint) },
+
         // IO
         .{ "slurp", fnToWord(Builtins.slurp) }, // (path -- string)
         .{ "spit", fnToWord(Builtins.spit) }, // (string path -- 0)
@@ -1502,6 +1581,7 @@ const Fy = struct {
 
         const Token = union(enum) {
             Number: i64,
+            Float: f64,
             Word: []const u8,
             String: []const u8,
         };
@@ -1613,6 +1693,17 @@ const Fy = struct {
                     while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
                         self.pos += 1;
                     }
+                    // Check for decimal point → float literal
+                    if (self.pos < self.code.len and self.code[self.pos] == '.' and
+                        self.pos + 1 < self.code.len and isDigit(self.code[self.pos + 1]))
+                    {
+                        self.pos += 1; // skip '.'
+                        while (self.pos < self.code.len and isDigit(self.code[self.pos])) {
+                            self.pos += 1;
+                        }
+                        const fval = std.fmt.parseFloat(f64, self.code[start..self.pos]) catch 0.0;
+                        return Token{ .Float = fval };
+                    }
                     const value = std.fmt.parseInt(i64, self.code[start..self.pos], 10) catch 2137;
                     return Token{ .Number = value };
                 }
@@ -1634,6 +1725,10 @@ const Fy = struct {
         fy: *Fy,
         // Name of the word currently being defined (for self-recursion)
         currentDef: ?[]const u8 = null,
+        // Base directory for resolving relative paths in include/import
+        base_dir: ?[]const u8 = null,
+        // Namespace prefix for import (e.g., "raylib:" → all defs become "raylib:word")
+        namespace: ?[]const u8 = null,
 
         const Relocation = struct {
             code_offset: usize, // index into code[] where BL placeholder lives
@@ -1809,8 +1904,20 @@ const Fy = struct {
                     try self.emitNumber(@as(u64, @bitCast(Fy.makeInt(n))), 0);
                     try self.emitPush();
                 },
+                .Float => |f| {
+                    try self.emitNumber(@as(u64, @bitCast(Fy.makeFloat(f))), 0);
+                    try self.emitPush();
+                },
                 .Word => |w| {
-                    const word = self.fy.findWord(w);
+                    // Namespace-aware lookup: if compiling inside a namespace,
+                    // try "ns:word" first (for intra-module references), then bare "word"
+                    const word = if (self.namespace) |ns| blk: {
+                        const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                        defer self.fy.fyalloc.free(prefixed);
+                        @memcpy(prefixed[0..ns.len], ns);
+                        @memcpy(prefixed[ns.len..], w);
+                        break :blk self.fy.findWord(prefixed) orelse self.fy.findWord(w);
+                    } else self.fy.findWord(w);
                     if (word) |w_val| {
                         try self.emitWord(w_val);
                     } else {
@@ -1930,6 +2037,10 @@ const Fy = struct {
                         first = false;
                         try items.append(Fy.Heap.Item{ .Number = n });
                     },
+                    .Float => |f| {
+                        first = false;
+                        try items.append(Fy.Heap.Item{ .Float = f });
+                    },
                     .String => |s| {
                         first = false;
                         const dup_s = try self.fy.fyalloc.dupe(u8, s);
@@ -1947,6 +2058,286 @@ const Fy = struct {
             return qv;
         }
 
+        /// Compile-time `sig:` word: emits inline ARM64 code to marshal args and call a C function.
+        /// Syntax: `sig: <arg-types>:<return-type>`
+        /// Arg chars: i=int(x reg), f=float32(s reg), d=float64(d reg), 4=4-byte struct(x reg), p=pointer(x reg)
+        /// Return chars: v=void(push 0), i=int(push x0), f=float32, d=float64
+        fn compileSigCall(self: *Compiler) Error!void {
+            const sig_tok = try self.parser.nextToken();
+            const sig = switch (sig_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            // Split signature on ':'
+            // Handle zero-arg case: ":" is tokenized as DEFINE, so sig == ":"
+            // and the return type is the next token (e.g., sig: :i → ":" then "i")
+            var args_part: []const u8 = "";
+            var ret_part: []const u8 = "i"; // default: integer return
+            if (std.mem.eql(u8, sig, ":")) {
+                // Zero-arg: read return type from next token
+                const ret_tok = try self.parser.nextToken();
+                ret_part = switch (ret_tok orelse return Error.UnexpectedEndOfInput) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+            } else {
+                args_part = sig;
+                for (sig, 0..) |ch, idx| {
+                    if (ch == ':') {
+                        args_part = sig[0..idx];
+                        ret_part = sig[idx + 1 ..];
+                        break;
+                    }
+                }
+            }
+
+            const n_args = args_part.len;
+            if (n_args > 7) return Error.OutOfMemory; // max 7 args (temp regs x9-x15)
+
+            // Phase 1: Pop fptr (TOS) into x16, then pop args into temp registers
+            // This convention means fptr is on top of args on the stack,
+            // which is natural for word definitions: `lib "fn" dl-sym sig: ...`
+            try self.emit(Asm.@".pop Xn"(16)); // fptr (TOS)
+            // Pop args in reverse order into temp registers x9..x(9+n_args-1)
+            var i: usize = n_args;
+            while (i > 0) {
+                i -= 1;
+                const temp_reg: u5 = @intCast(9 + i); // x9, x10, x11, ...
+                try self.emit(Asm.@".pop Xn"(temp_reg));
+            }
+
+            // Phase 2: Route each temp register to the correct target register
+            var int_reg: u5 = 0; // x0, x1, x2, ...
+            var float_reg: u5 = 0; // d0/s0, d1/s1, ...
+            for (args_part, 0..) |arg_type, arg_idx| {
+                const temp_reg: u5 = @intCast(9 + arg_idx);
+                switch (arg_type) {
+                    'i', '4', 'p' => {
+                        // Integer/pointer/4-byte struct → next x register
+                        try self.emit(Asm.@"mov Xd, Xn"(int_reg, temp_reg));
+                        int_reg += 1;
+                    },
+                    'f' => {
+                        // Float32: value on stack is f64 bits in i64.
+                        // Move to d register, then convert d→s for C ABI.
+                        try self.emit(Asm.@"fmov Dd, Xn"(float_reg, temp_reg));
+                        try self.emit(Asm.@"fcvt Sd, Dn"(float_reg, float_reg));
+                        float_reg += 1;
+                    },
+                    'd' => {
+                        // Float64: value on stack is f64 bits in i64. Move to d register.
+                        try self.emit(Asm.@"fmov Dd, Xn"(float_reg, temp_reg));
+                        float_reg += 1;
+                    },
+                    else => return Error.UnknownWord, // unknown type char
+                }
+            }
+
+            // Phase 3: Call
+            try self.emit(Asm.@"blr Xn"(16));
+
+            // Phase 4: Handle return value
+            if (ret_part.len == 0 or ret_part[0] == 'v') {
+                // Void return — push 0
+                try self.emit(Asm.@"mov x0, #0");
+                try self.emitPush();
+            } else if (ret_part[0] == 'i' or ret_part[0] == 'p') {
+                // Integer return — x0 already has the value
+                try self.emitPush();
+            } else if (ret_part[0] == 'f') {
+                // Float32 return — s0 has result, convert to f64, move to x0
+                try self.emit(Asm.@"fcvt Dd, Sn"(0, 0));
+                try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                try self.emitPush();
+            } else if (ret_part[0] == 'd') {
+                // Float64 return — d0 has result, move to x0
+                try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                try self.emitPush();
+            } else {
+                return Error.UnknownWord;
+            }
+        }
+
+        /// Resolve a file path relative to the current compiler's base_dir.
+        /// Returns allocated path that caller must free.
+        fn resolveFilePath(self: *Compiler, raw_path: []const u8) ![]u8 {
+            // If path is absolute, use as-is
+            if (raw_path.len > 0 and raw_path[0] == '/') {
+                return self.fy.fyalloc.dupe(u8, raw_path);
+            }
+            // Resolve relative to base_dir (directory of the importing file)
+            if (self.base_dir) |bd| {
+                const result = try self.fy.fyalloc.alloc(u8, bd.len + 1 + raw_path.len);
+                @memcpy(result[0..bd.len], bd);
+                result[bd.len] = '/';
+                @memcpy(result[bd.len + 1 ..], raw_path);
+                return result;
+            }
+            // No base_dir — use path as-is (relative to cwd)
+            return self.fy.fyalloc.dupe(u8, raw_path);
+        }
+
+        /// Get directory part of a path (everything before the last '/')
+        fn dirName(path: []const u8) ?[]const u8 {
+            var i = path.len;
+            while (i > 0) {
+                i -= 1;
+                if (path[i] == '/') return path[0..i];
+            }
+            return null;
+        }
+
+        /// Load and compile a file, applying an optional namespace prefix to definitions.
+        fn compileFile(self: *Compiler, file_path: []const u8, namespace: ?[]const u8) Error!void {
+            // Check if already imported (dedup guard)
+            if (self.fy.importedFiles.get(file_path) != null) return;
+
+            // Mark as imported
+            const key = self.fy.fyalloc.dupe(u8, file_path) catch return Error.OutOfMemory;
+            self.fy.importedFiles.put(key, {}) catch return Error.OutOfMemory;
+
+            // Read file
+            const file = std.fs.cwd().openFile(file_path, .{}) catch {
+                std.debug.print("Cannot open file: {s}\n", .{file_path});
+                return Error.UnknownWord;
+            };
+            defer file.close();
+            const stat = file.stat() catch return Error.OutOfMemory;
+            const src = file.reader().readAllAlloc(self.fy.fyalloc, stat.size) catch return Error.OutOfMemory;
+            defer self.fy.fyalloc.free(src);
+
+            // Skip shebang
+            var clean_src = src;
+            if (src.len > 2 and src[0] == '#' and src[1] == '!') {
+                var i: usize = 2;
+                while (i < src.len and src[i] != '\n') i += 1;
+                clean_src = src[i..];
+            }
+
+            // Compile with a sub-compiler sharing the same Fy
+            var parser = Parser.init(clean_src);
+            var compiler = Compiler.init(self.fy, &parser);
+            compiler.base_dir = dirName(file_path);
+            compiler.namespace = namespace;
+            defer compiler.deinit();
+
+            // Compile the file body — definitions go into fy.userWords
+            // We compile as .None (no function wrapping) so only definitions matter
+            const code = compiler.compile(.None) catch |err| {
+                std.debug.print("Error compiling {s}: {}\n", .{ file_path, err });
+                return err;
+            };
+            // Free the generated code — we only care about side-effects (word definitions)
+            self.fy.fyalloc.free(code);
+        }
+
+        /// `include "path.fy"` — textual inclusion, no namespace
+        fn compileInclude(self: *Compiler) Error!void {
+            const tok = try self.parser.nextToken();
+            const path = switch (tok orelse return Error.UnexpectedEndOfInput) {
+                .String => |s| s,
+                else => return Error.ExpectedWord,
+            };
+            const resolved = self.resolveFilePath(path) catch return Error.OutOfMemory;
+            defer self.fy.fyalloc.free(resolved);
+            try self.compileFile(resolved, null);
+        }
+
+        /// `import "name"` — namespaced inclusion (definitions become basename:word)
+        fn compileImport(self: *Compiler) Error!void {
+            const tok = try self.parser.nextToken();
+            const name = switch (tok orelse return Error.UnexpectedEndOfInput) {
+                .String => |s| s,
+                else => return Error.ExpectedWord,
+            };
+
+            // Extract basename for namespace (strip directory and .fy extension)
+            var base = name;
+            // Strip directory
+            if (std.mem.lastIndexOfScalar(u8, base, '/')) |idx| {
+                base = base[idx + 1 ..];
+            }
+            // Strip .fy extension if present
+            if (std.mem.endsWith(u8, base, ".fy")) {
+                base = base[0 .. base.len - 3];
+            }
+
+            // Build namespace prefix "basename:"
+            const ns = self.fy.fyalloc.alloc(u8, base.len + 1) catch return Error.OutOfMemory;
+            defer self.fy.fyalloc.free(ns);
+            @memcpy(ns[0..base.len], base);
+            ns[base.len] = ':';
+
+            // Resolve file path: append ".fy" if not already present
+            const file_path = if (std.mem.endsWith(u8, name, ".fy"))
+                (self.fy.fyalloc.dupe(u8, name) catch return Error.OutOfMemory)
+            else blk: {
+                const fy_ext = self.fy.fyalloc.alloc(u8, name.len + 3) catch return Error.OutOfMemory;
+                @memcpy(fy_ext[0..name.len], name);
+                @memcpy(fy_ext[name.len..], ".fy");
+                break :blk fy_ext;
+            };
+            defer self.fy.fyalloc.free(file_path);
+
+            const resolved = self.resolveFilePath(file_path) catch return Error.OutOfMemory;
+            defer self.fy.fyalloc.free(resolved);
+            try self.compileFile(resolved, ns);
+        }
+
+        /// `constant name body ;` — evaluate body once, bake result as a literal-push word.
+        /// Example: `constant libsys "/usr/lib/libSystem.B.dylib" dl-open ;`
+        fn compileConstant(self: *Compiler) Error!void {
+            const name_tok = try self.parser.nextToken();
+            const cname = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            // Compile the body (terminated by ;) as a full Function so it can execute standalone
+            var body_compiler = Compiler.init(self.fy, self.parser);
+            body_compiler.namespace = self.namespace;
+            defer body_compiler.deinit();
+            const body_code = try body_compiler.compile(.Function);
+
+            // Resolve relocations (body might call user words like dl-open)
+            const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
+            body_compiler.resolveRelocations(link_base, body_code);
+
+            // Link body into executable memory and call it
+            const body_exe = self.fy.image.link(body_code);
+            self.fy.fyalloc.free(body_code);
+            Builtins.fyPtr = @intFromPtr(self.fy);
+            const body_fn: *const fn () Value = @alignCast(@ptrCast(body_exe));
+            const value: u64 = @bitCast(body_fn());
+
+            // Build a tiny word that just pushes this literal value
+            var val_compiler = Compiler.init(self.fy, self.parser); // parser unused
+            defer val_compiler.deinit();
+            try val_compiler.enterPersist();
+            try val_compiler.emitNumber(value, 0);
+            try val_compiler.emitPush();
+            try val_compiler.leavePersist();
+            const val_code = try val_compiler.code.toOwnedSlice();
+            const val_exe = self.fy.image.link(val_code);
+            const entry_addr = @intFromPtr(val_exe.ptr);
+            self.fy.fyalloc.free(val_code);
+
+            // Register the word (with namespace prefix if applicable)
+            const final_name = if (self.namespace) |ns| blk: {
+                const prefixed = self.fy.fyalloc.alloc(u8, ns.len + cname.len) catch return Error.OutOfMemory;
+                @memcpy(prefixed[0..ns.len], ns);
+                @memcpy(prefixed[ns.len..], cname);
+                break :blk prefixed;
+            } else null;
+            const reg_name = final_name orelse cname;
+            try self.declareWord(reg_name);
+            if (self.fy.userWords.getPtr(reg_name)) |word| {
+                word.image_addr = entry_addr;
+            }
+            if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+        }
+
         fn compileDefinition(self: *Compiler) Error!void {
             const name = try self.parser.nextToken();
             if (name) |n| {
@@ -1954,6 +2345,9 @@ const Fy = struct {
                     .Word => |w| {
                         var compiler = Compiler.init(self.fy, self.parser);
                         defer compiler.deinit();
+
+                        // Inherit namespace for intra-module word resolution
+                        compiler.namespace = self.namespace;
 
                         // enable self-references during compilation
                         compiler.currentDef = w;
@@ -1970,11 +2364,22 @@ const Fy = struct {
                         const entry_addr = @intFromPtr(entry.ptr);
                         self.fy.fyalloc.free(code);
 
+                        // Apply namespace prefix for import (e.g., "raylib:" → "raylib:word")
+                        const final_name = if (self.namespace) |ns| blk: {
+                            const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
+                            @memcpy(prefixed[0..ns.len], ns);
+                            @memcpy(prefixed[ns.len..], w);
+                            break :blk prefixed;
+                        } else null;
+                        const reg_name = final_name orelse w;
+
                         // Declare word AFTER successful compilation (fixes ghost word bug)
-                        try self.declareWord(w);
-                        if (self.fy.userWords.getPtr(w)) |word| {
+                        try self.declareWord(reg_name);
+                        if (self.fy.userWords.getPtr(reg_name)) |word| {
                             word.image_addr = entry_addr;
                         }
+                        // Free the prefixed name if we allocated one (declareWord dupes it)
+                        if (final_name) |fn_| self.fy.fyalloc.free(fn_);
                     },
                     else => {
                         return Error.ExpectedWord;
@@ -2050,6 +2455,10 @@ const Fy = struct {
                             try self.compileDefinition();
                             continue;
                         }
+                        if (std.mem.eql(u8, w, "constant")) {
+                            try self.compileConstant();
+                            continue;
+                        }
                         // Self-recursion: emit BL back to own entry point
                         if (self.currentDef) |def_name| {
                             if (std.mem.eql(u8, w, def_name)) {
@@ -2061,6 +2470,18 @@ const Fy = struct {
                             const qv = try self.parseQuoteToHeap();
                             try self.emitNumber(@as(u64, @bitCast(qv)), 0);
                             try self.emitPush();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "sig:")) {
+                            try self.compileSigCall();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "include")) {
+                            try self.compileInclude();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "import")) {
+                            try self.compileImport();
                             continue;
                         }
                     },
@@ -2231,6 +2652,10 @@ const Fy = struct {
                 try c.emitNumber(@as(u64, @bitCast(makeInt(n))), 0);
                 try c.emitPush();
             },
+            .Float => |f| {
+                try c.emitNumber(@as(u64, @bitCast(makeFloat(f))), 0);
+                try c.emitPush();
+            },
             .Word => |w| {
                 var is_local = false;
                 var li: usize = 0;
@@ -2270,12 +2695,13 @@ const Fy = struct {
         return code;
     }
 
-    fn run(self: *Fy, src: []const u8) !Fy.Value {
+    fn runWithBaseDir(self: *Fy, src: []const u8, base_dir: ?[]const u8) !Fy.Value {
         // Set fyPtr for Builtins to access heap
         Builtins.fyPtr = @intFromPtr(self);
 
         var parser = Fy.Parser.init(src);
         var compiler = Fy.Compiler.init(self, &parser);
+        compiler.base_dir = base_dir;
         defer compiler.deinit();
         const code = compiler.compileFn();
 
@@ -2290,6 +2716,10 @@ const Fy = struct {
         } else |err| {
             return err;
         }
+    }
+
+    fn run(self: *Fy, src: []const u8) !Fy.Value {
+        return self.runWithBaseDir(src, null);
     }
 
     fn initVmStack(self: *Fy) void {
@@ -2387,7 +2817,9 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
         }
         cleanSrc = src[i..];
     }
-    const result = fy.run(cleanSrc);
+    // Extract directory of the file for include/import resolution
+    const base_dir = Fy.Compiler.dirName(path);
+    const result = fy.runWithBaseDir(cleanSrc, base_dir);
     allocator.free(src);
     if (result) |_| {
         //std.debug.print("{d}\n", .{r});

@@ -1,0 +1,33 @@
+# Math functions from libSystem (macOS)
+/usr/lib/libSystem.B.dylib
+
+# Trig (double)
+sin    d:d
+cos    d:d
+tan    d:d
+asin   d:d
+acos   d:d
+atan   d:d
+atan2  dd:d
+
+# Powers & roots (double)
+pow    dd:d
+sqrt   d:d
+cbrt   d:d
+exp    d:d
+log    d:d
+log10  d:d
+log2   d:d
+
+# Float32 variants
+sinf   f:f
+cosf   f:f
+sqrtf  f:f
+
+# Rounding (double)
+ceil   d:d
+floor  d:d
+round  d:d
+
+# Integer
+abs    i:i

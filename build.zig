@@ -93,6 +93,23 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // gen-ffi tool — FFI binding generator
+    const gen_ffi = b.addExecutable(.{
+        .name = "gen-ffi",
+        .root_source_file = b.path("tools/gen-ffi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    b.installArtifact(gen_ffi);
+
+    const run_gen_ffi = b.addRunArtifact(gen_ffi);
+    run_gen_ffi.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_gen_ffi.addArgs(args);
+    }
+    const gen_ffi_step = b.step("gen-ffi", "Run FFI binding generator");
+    gen_ffi_step.dependOn(&run_gen_ffi.step);
+
     // jit69 helper
     const jit69 = b.addExecutable(.{
         .name = "jit69",
