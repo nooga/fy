@@ -24,6 +24,7 @@ DrawRectangleLines iiii4:v
 
 # Text
 DrawText         iiii4:v
+DrawFPS          ii:v
 
 # 3D Camera
 BeginMode3D      i:v

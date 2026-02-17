@@ -2,11 +2,6 @@
 import "libm"
 import "raylib"
 
-( malloc from libSystem )
-:: _libsys "/usr/lib/libSystem.B.dylib" dl-open ;
-:: _malloc _libsys "malloc" dl-sym ;
-: malloc _malloc sig: i:i ;
-
 ( Color packing: r g b a -- color )
 : rgba  24 << swap 16 << or swap 8 << or swap or ;
 
@@ -17,32 +12,11 @@ import "raylib"
 :: GOLD      255 203 0 255 rgba ;
 :: LIGHTGRAY 200 200 200 255 rgba ;
 
-( Camera3D struct: 44 bytes )
-( 0:  position.x  f32 )
-( 4:  position.y  f32 )
-( 8:  position.z  f32 )
-( 12: target.x    f32 )
-( 16: target.y    f32 )
-( 20: target.z    f32 )
-( 24: up.x        f32 )
-( 28: up.y        f32 )
-( 32: up.z        f32 )
-( 36: fovy         f32 )
-( 40: projection   i32 )
-
-: make-camera ( -- cam )
-  44 malloc
-  dup 0 +  6.0 f!32
-  dup 4 +  4.0 f!32
-  dup 8 +  6.0 f!32
-  dup 12 + 0.0 f!32
-  dup 16 + 0.0 f!32
-  dup 20 + 0.0 f!32
-  dup 24 + 0.0 f!32
-  dup 28 + 1.0 f!32
-  dup 32 + 0.0 f!32
-  dup 36 + 45.0 f!32
-  dup 40 + 0 !32
+struct: Camera3D
+  f32 position-x  f32 position-y  f32 position-z
+  f32 target-x    f32 target-y    f32 target-z
+  f32 up-x        f32 up-y        f32 up-z
+  f32 fovy        i32 projection
 ;
 
 ( Update camera orbit position based on time )
@@ -57,10 +31,18 @@ import "raylib"
   dup 8 + r> f!32              ( cam )           ( pos.z = cos(t)*8 )
 ;
 
-800 450 "fy - Rotating Cube" cstr-new raylib:InitWindow
+:: title "fy - Rotating Cube" cstr-new ;
+
+800 450 title raylib:InitWindow
 60 raylib:SetTargetFPS
 
-:: cam make-camera ;
+:: cam
+  6.0 4.0 6.0 (position)
+  0.0 0.0 0.0 (target)
+  0.0 1.0 0.0 (up)
+  45.0 0      (fovy, projection)
+  Camera3D.new
+;
 
 : frame
   cam update-camera drop
@@ -70,17 +52,24 @@ import "raylib"
 
     cam raylib:BeginMode3D
       ( Draw solid cube )
-      0.0 0.0 0.0  2.0 2.0 2.0  RED raylib:DrawCube
+      0.0 0.0 0.0  
+      2.0 2.0 2.0  
+      RED 
+      raylib:DrawCube
       ( Draw wireframe )
-      0.0 0.0 0.0  2.0 2.0 2.0  DARKGRAY raylib:DrawCubeWires
+      0.0 0.0 0.0  
+      2.0 2.0 2.0  
+      DARKGRAY 
+      raylib:DrawCubeWires
       ( Draw ground grid )
       10 1.0 raylib:DrawGrid
     raylib:EndMode3D
 
-    "fy - Rotating Cube" cstr-new 10 10 20 DARKGRAY raylib:DrawText
+    title 10 10 20 DARKGRAY raylib:DrawText
+    10 40 raylib:DrawFPS
   raylib:EndDrawing
 ;
 
-: loop  raylib:WindowShouldClose 0 = [ frame loop ] [ ] ifte ;
-loop
+: running?  raylib:WindowShouldClose 0 = ;
+running? [ drop frame running? ] repeat
 raylib:CloseWindow

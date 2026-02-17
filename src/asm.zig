@@ -229,3 +229,75 @@ pub fn @"fcvt Sd, Dn"(d: u5, n: u5) u32 {
 pub fn @"fcvt Dd, Sn"(d: u5, n: u5) u32 {
     return 0x1E22C000 | @as(u32, d) | (@as(u32, n) << 5);
 }
+
+// --- Sized memory access instructions for struct fields ---
+
+// STRB Wt, [Xn, #imm] — 8-bit store, unsigned byte offset (0..4095)
+pub fn strb_imm(rt: u5, rn: u5, offset: u12) u32 {
+    return 0x39000000 | (@as(u32, offset) << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// STRH Wt, [Xn, #imm] — 16-bit store, unsigned byte offset (must be multiple of 2)
+pub fn strh_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 1;
+    return 0x79000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// STR Wt, [Xn, #imm] — 32-bit store, unsigned byte offset (must be multiple of 4)
+pub fn str_w_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 2;
+    return 0xB9000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// STR Xt, [Xn, #imm] — 64-bit store, unsigned byte offset (must be multiple of 8)
+pub fn str_x_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 3;
+    return 0xF9000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// STR St, [Xn, #imm] — float32 store, unsigned byte offset (must be multiple of 4)
+pub fn str_s_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 2;
+    return 0xBD000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// STR Dt, [Xn, #imm] — float64 store, unsigned byte offset (must be multiple of 8)
+pub fn str_d_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 3;
+    return 0xFD000000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDRB Wt, [Xn, #imm] — 8-bit load, unsigned byte offset (0..4095)
+pub fn ldrb_imm(rt: u5, rn: u5, offset: u12) u32 {
+    return 0x39400000 | (@as(u32, offset) << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDRH Wt, [Xn, #imm] — 16-bit load, unsigned byte offset (must be multiple of 2)
+pub fn ldrh_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 1;
+    return 0x79400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDR Wt, [Xn, #imm] — 32-bit load, unsigned byte offset (must be multiple of 4)
+pub fn ldr_w_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 2;
+    return 0xB9400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDR Xt, [Xn, #imm] — 64-bit load, unsigned byte offset (must be multiple of 8)
+pub fn ldr_x_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 3;
+    return 0xF9400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDR St, [Xn, #imm] — float32 load, unsigned byte offset (must be multiple of 4)
+pub fn ldr_s_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 2;
+    return 0xBD400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}
+
+// LDR Dt, [Xn, #imm] — float64 load, unsigned byte offset (must be multiple of 8)
+pub fn ldr_d_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
+    const scaled: u32 = @as(u32, offset_bytes) >> 3;
+    return 0xFD400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
+}

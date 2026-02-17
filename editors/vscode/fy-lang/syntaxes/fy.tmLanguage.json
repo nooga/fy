@@ -7,6 +7,7 @@
     { "include": "#shebang" },
     { "include": "#string" },
     { "include": "#char-literal" },
+    { "include": "#struct-definition" },
     { "include": "#constant-definition" },
     { "include": "#word-definition" },
     { "include": "#locals" },
@@ -19,11 +20,13 @@
     { "include": "#operators" },
     { "include": "#stack-ops" },
     { "include": "#float-ops" },
+    { "include": "#memory-ops" },
     { "include": "#ffi-words" },
     { "include": "#io-words" },
     { "include": "#quote-ops" },
     { "include": "#type-check" },
-    { "include": "#rstack" }
+    { "include": "#rstack" },
+    { "include": "#namespaced-call" }
   ],
   "repository": {
     "comment": {
@@ -52,6 +55,29 @@
     "char-literal": {
       "name": "constant.character.fy",
       "match": "'[^\\s]"
+    },
+    "struct-definition": {
+      "name": "meta.struct.fy",
+      "begin": "(struct:)\\s+([^\\s;]+)",
+      "end": "(;)",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.struct.fy" },
+        "2": { "name": "entity.name.type.struct.fy" }
+      },
+      "endCaptures": {
+        "1": { "name": "keyword.control.end.fy" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        {
+          "name": "storage.type.field.fy",
+          "match": "(?<=\\s|^)(i8|u8|i16|u16|i32|u32|i64|u64|f32|f64|ptr)(?=\\s|$)"
+        },
+        {
+          "name": "variable.other.field.fy",
+          "match": "[^\\s;]+"
+        }
+      ]
     },
     "constant-definition": {
       "match": "(::)\\s+([^\\s;]+)",
@@ -110,7 +136,7 @@
     },
     "directives": {
       "name": "keyword.other.directive.fy",
-      "match": "(?<=\\s|^)(sig:|include|import)(?=\\s|$)"
+      "match": "(?<=\\s|^)(bind:|sig:|include|import)(?=\\s|$)"
     },
     "flow-control": {
       "name": "keyword.control.flow.fy",
@@ -127,6 +153,10 @@
     "float-ops": {
       "name": "support.function.float.fy",
       "match": "(?<=\\s|^)(f\\+|f-|f\\*|f/|f<|f>|f=|fneg|f\\.|i>f|f>i)(?=\\s|$|;|\\])"
+    },
+    "memory-ops": {
+      "name": "support.function.memory.fy",
+      "match": "(?<=\\s|^)(alloc|free|!32|f!32|@32)(?=\\s|$|;|\\])"
     },
     "ffi-words": {
       "name": "support.function.ffi.fy",
@@ -147,6 +177,14 @@
     "rstack": {
       "name": "support.function.rstack.fy",
       "match": "(?<=\\s|^)(>r|r>|r@)(?=\\s|$|;|\\])"
+    },
+    "namespaced-call": {
+      "match": "([a-zA-Z_][a-zA-Z0-9_-]*)(:)([a-zA-Z_][a-zA-Z0-9_-]*)",
+      "captures": {
+        "1": { "name": "entity.name.namespace.fy" },
+        "2": { "name": "punctuation.separator.namespace.fy" },
+        "3": { "name": "entity.name.function.call.fy" }
+      }
     }
   }
 }

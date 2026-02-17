@@ -62,6 +62,7 @@ const Fy = struct {
     tramp_stack_top: usize = 0,
     image: Image,
     heap: Heap,
+    struct_layouts: std.ArrayList(StructLayout),
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -128,6 +129,7 @@ const Fy = struct {
             .fyalloc = allocator,
             .image = image,
             .heap = Heap.init(allocator),
+            .struct_layouts = std.ArrayList(StructLayout).init(allocator),
         };
         fy.initStacks();
         return fy;
@@ -136,6 +138,14 @@ const Fy = struct {
     fn deinit(self: *Fy) void {
         self.image.deinit();
         self.heap.deinit();
+        for (self.struct_layouts.items) |layout| {
+            for (layout.fields) |field| {
+                self.fyalloc.free(field.name);
+            }
+            self.fyalloc.free(layout.fields);
+            self.fyalloc.free(layout.name);
+        }
+        self.struct_layouts.deinit();
         deinitUserWords(self);
         self.deinitImportedFiles();
         self.deinitStacks();
@@ -273,6 +283,46 @@ const Fy = struct {
         }
         try writer.print("]", .{});
     }
+
+    // Struct layout for compile-time struct definitions
+    const FieldType = enum {
+        i8,
+        u8,
+        i16,
+        u16,
+        i32,
+        u32,
+        i64,
+        u64,
+        f32,
+        f64,
+        ptr,
+
+        fn size(self: FieldType) u16 {
+            return switch (self) {
+                .i8, .u8 => 1,
+                .i16, .u16 => 2,
+                .i32, .u32, .f32 => 4,
+                .i64, .u64, .f64, .ptr => 8,
+            };
+        }
+
+        fn alignment(self: FieldType) u16 {
+            return self.size();
+        }
+    };
+
+    const FieldDef = struct {
+        name: []const u8,
+        offset: u16,
+        field_type: FieldType,
+    };
+
+    const StructLayout = struct {
+        name: []const u8,
+        size: u16,
+        fields: []FieldDef,
+    };
 
     // Unified heap for strings and quotes with lazy JIT cache
     const Heap = struct {
@@ -943,6 +993,23 @@ const Fy = struct {
             return makeInt(0);
         }
 
+        // alloc: ( size -- ptr ) allocate zeroed memory via libc malloc
+        fn allocMem(size_v: Value) Value {
+            const n: usize = @intCast(@as(u64, @bitCast(size_v)));
+            const mem = c_std.malloc(n);
+            if (mem == null) @panic("alloc: malloc failed");
+            const p: [*]u8 = @ptrCast(mem);
+            @memset(p[0..n], 0);
+            return makeInt(@as(i64, @intCast(@intFromPtr(mem))));
+        }
+
+        // free: ( ptr -- 0 ) free memory allocated by alloc
+        fn freeMem(ptr_v: Value) Value {
+            const up: usize = @intCast(@as(u64, @bitCast(ptr_v)));
+            c_std.free(@ptrFromInt(up));
+            return makeInt(0);
+        }
+
         // with-cstr: (string callable -- result)
         // Allocates C string, calls C-style function pointer (usize)->usize with arg ptr, frees, returns result.
         fn withCstr(callable: Value, sv: Value) Value {
@@ -1601,6 +1668,10 @@ const Fy = struct {
         .{ "!32", fnToWord(Builtins.memStore32) }, // (val addr -- )
         .{ "f!32", fnToWord(Builtins.memStoreF32) }, // (fval addr -- )
         .{ "@32", fnToWord(Builtins.memLoad32) }, // (addr -- val)
+
+        // Raw memory allocation
+        .{ "alloc", fnToWord(Builtins.allocMem) }, // ( size -- ptr )
+        .{ "free", fnToWord(Builtins.freeMem) }, // ( ptr -- 0 )
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
@@ -2110,11 +2181,12 @@ const Fy = struct {
             return qv;
         }
 
-        /// Compile-time `sig:` word: emits inline ARM64 code to marshal args and call a C function.
-        /// Syntax: `sig: <arg-types>:<return-type>`
-        /// Arg chars: i=int(x reg), f=float32(s reg), d=float64(d reg), 4=4-byte struct(x reg), p=pointer(x reg)
+        /// Compile-time `bind:` word: emits inline ARM64 code to marshal args and call a C function.
+        /// Syntax: `bind: <arg-types>:<return-type>`
+        /// Arg chars: i=int(x reg), f=float32(s reg), d=float64(d reg), 4=4-byte struct(x reg),
+        ///            p=pointer(x reg), s=temp string(auto cstr, freed after call), S=persistent string(auto cstr)
         /// Return chars: v=void(push 0), i=int(push x0), f=float32, d=float64
-        fn compileSigCall(self: *Compiler) Error!void {
+        fn compileBind(self: *Compiler) Error!void {
             // Read signature as raw text to avoid tokenizer interpreting digits/colons
             const sig = self.parser.nextRawWord() orelse return Error.UnexpectedEndOfInput;
 
@@ -2132,6 +2204,21 @@ const Fy = struct {
             const n_args = args_part.len;
             if (n_args > 7) return Error.OutOfMemory; // max 7 args
 
+            // Count string args that need temporary C string conversion
+            var temp_str_count: usize = 0;
+            var has_any_str: bool = false;
+            for (args_part) |arg_type| {
+                if (arg_type == 's') temp_str_count += 1;
+                if (arg_type == 's' or arg_type == 'S') has_any_str = true;
+            }
+
+            // If we have string args, allocate a machine stack frame for:
+            // [sp+0]: saved x16 (fptr), [sp+8]: return value save, [sp+16..]: temp cstr ptrs
+            const frame_size: u12 = if (has_any_str) blk: {
+                const needed = (2 + temp_str_count) * 8;
+                break :blk @intCast((needed + 15) & ~@as(usize, 15)); // align to 16
+            } else 0;
+
             // Peephole: if the previous instruction pushed fptr to the stack,
             // retract the push and mov x0 → x16 directly (saves push + pop)
             if (self.prev == Asm.@".push x0" and self.code.items.len > 0) {
@@ -2141,14 +2228,59 @@ const Fy = struct {
                 try self.emit(Asm.@".pop Xn"(16)); // fptr (TOS)
             }
 
+            // String pre-pass: convert fy strings to C strings on the data stack
+            if (has_any_str) {
+                // Allocate frame
+                try self.emit(Asm.sub_sp_imm(frame_size));
+                // Save fptr (x16) — cstrNew calls will clobber caller-saved regs
+                try self.emit(Asm.str_sp_x0(0)); // reuse slot at sp+0
+                // Actually we need to save x16, not x0. Move x16 to x0 first, save, then restore.
+                // Simpler: use stur x16 at sp+0 directly. Encode: str x16, [sp, #0]
+                // str_sp_x0 hardcodes Rt=x0. We need Rt=x16. Use str_x_imm instead:
+                self.code.items.len -= 1; // retract the str_sp_x0 we just emitted
+                try self.emit(Asm.str_x_imm(16, 31, 0)); // str x16, [sp, #0]
+
+                const cstr_new_addr = @intFromPtr(&Builtins.cstrNew);
+                var temp_idx: usize = 0;
+
+                for (args_part, 0..) |arg_type, arg_idx| {
+                    if (arg_type != 's' and arg_type != 'S') continue;
+
+                    // Compute depth of this arg from TOS (after fptr was popped)
+                    // arg 0 is deepest, arg n_args-1 is TOS
+                    const depth = (n_args - 1 - arg_idx) * 8;
+
+                    // Load fy string value from data stack
+                    try self.emit(Asm.ldr_x_imm(0, 21, @intCast(depth))); // ldr x0, [x21, #depth]
+
+                    // Call cstrNew(x0) -> x0 = makeInt(cstr_ptr)
+                    try self.emitPtr(cstr_new_addr, 17);
+                    try self.emit(Asm.@"blr Xn"(17));
+
+                    // Store result back on the data stack (replacing fy string)
+                    try self.emit(Asm.str_x_imm(0, 21, @intCast(depth))); // str x0, [x21, #depth]
+
+                    // For temp 's' args: save C string ptr for post-call freeing
+                    if (arg_type == 's') {
+                        const slot_offset: u12 = @intCast(16 + temp_idx * 8);
+                        try self.emit(Asm.str_x_imm(0, 31, slot_offset)); // str x0, [sp, #slot]
+                        temp_idx += 1;
+                    }
+                }
+
+                // Restore fptr from frame
+                try self.emit(Asm.ldr_x_imm(16, 31, 0)); // ldr x16, [sp, #0]
+            }
+
             // Pre-compute target register for each arg position
+            // String args ('s'/'S') are now C string pointers — treat as 'p' (integer/pointer)
             var int_reg: u5 = 0;
             var float_reg: u5 = 0;
             var target_regs: [7]u5 = undefined;
             var is_float_arg: [7]bool = undefined;
             for (args_part, 0..) |arg_type, idx| {
                 switch (arg_type) {
-                    'i', '4', 'p' => {
+                    'i', '4', 'p', 's', 'S' => {
                         target_regs[idx] = int_reg;
                         is_float_arg[idx] = false;
                         int_reg += 1;
@@ -2197,20 +2329,43 @@ const Fy = struct {
             try self.emit(Asm.@"blr Xn"(16));
 
             // Handle return value
-            if (ret_part.len == 0 or ret_part[0] == 'v') {
-                try self.emit(Asm.@"mov x0, #0");
-                try self.emitPush();
+            const is_void = ret_part.len == 0 or ret_part[0] == 'v';
+            if (is_void) {
+                // void: don't push anything onto the data stack
             } else if (ret_part[0] == 'i' or ret_part[0] == 'p') {
-                try self.emitPush();
+                // x0 already has the return value
             } else if (ret_part[0] == 'f') {
                 try self.emit(Asm.@"fcvt Dd, Sn"(0, 0));
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
-                try self.emitPush();
             } else if (ret_part[0] == 'd') {
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
-                try self.emitPush();
             } else {
                 return Error.UnknownWord;
+            }
+
+            // Post-call: free temp 's' strings
+            if (temp_str_count > 0) {
+                // Save return value to frame
+                try self.emit(Asm.str_x_imm(0, 31, 8)); // str x0, [sp, #8]
+
+                const cstr_free_addr = @intFromPtr(&Builtins.cstrFree);
+                for (0..temp_str_count) |tidx| {
+                    const slot_offset: u12 = @intCast(16 + tidx * 8);
+                    try self.emit(Asm.ldr_x_imm(0, 31, slot_offset)); // ldr x0, [sp, #slot]
+                    try self.emitPtr(cstr_free_addr, 17);
+                    try self.emit(Asm.@"blr Xn"(17));
+                }
+
+                // Restore return value
+                try self.emit(Asm.ldr_x_imm(0, 31, 8)); // ldr x0, [sp, #8]
+            }
+
+            // Clean up frame and push result
+            if (has_any_str) {
+                try self.emit(Asm.add_sp_imm(frame_size));
+            }
+            if (!is_void) {
+                try self.emitPush();
             }
         }
 
@@ -2393,6 +2548,208 @@ const Fy = struct {
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
 
+        fn parseFieldType(name: []const u8) ?FieldType {
+            const map = std.StaticStringMap(FieldType).initComptime(.{
+                .{ "i8", .i8 },
+                .{ "u8", .u8 },
+                .{ "i16", .i16 },
+                .{ "u16", .u16 },
+                .{ "i32", .i32 },
+                .{ "u32", .u32 },
+                .{ "i64", .i64 },
+                .{ "u64", .u64 },
+                .{ "f32", .f32 },
+                .{ "f64", .f64 },
+                .{ "ptr", .ptr },
+            });
+            return map.get(name);
+        }
+
+        /// Helper: build a user word from a code-emitting sub-compiler, link it, and register it.
+        fn registerGeneratedWord(self: *Compiler, word_name: []const u8, code_slice: []u32) Error!void {
+            const exe = self.fy.image.link(code_slice);
+            const entry_addr = @intFromPtr(exe.ptr);
+            self.fy.fyalloc.free(code_slice);
+
+            try self.declareWord(word_name);
+            if (self.fy.userWords.getPtr(word_name)) |word| {
+                word.image_addr = entry_addr;
+            }
+        }
+
+        /// `struct: Name type field type field ... ;` — define a struct layout and generate S.size, S.alloc, S.new
+        fn compileStruct(self: *Compiler) Error!void {
+            // Read struct name
+            const name_tok = try self.parser.nextToken();
+            const struct_name = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            // Parse field definitions: type name type name ... ;
+            var fields_list = std.ArrayList(FieldDef).init(self.fy.fyalloc);
+            defer fields_list.deinit();
+
+            var current_offset: u16 = 0;
+            var max_align: u16 = 1;
+
+            while (true) {
+                // Read type token
+                const type_tok = try self.parser.nextToken();
+                const type_word = switch (type_tok orelse return Error.UnexpectedEndOfInput) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+                // Check for end of struct
+                if (std.mem.eql(u8, type_word, ";")) break;
+
+                const field_type = parseFieldType(type_word) orelse {
+                    std.debug.print("Unknown field type: {s}\n", .{type_word});
+                    return Error.UnknownWord;
+                };
+
+                // Read field name
+                const field_tok = try self.parser.nextToken();
+                const field_name = switch (field_tok orelse return Error.UnexpectedEndOfInput) {
+                    .Word => |w| w,
+                    else => return Error.ExpectedWord,
+                };
+
+                // Compute aligned offset
+                const align_val = field_type.alignment();
+                if (align_val > max_align) max_align = align_val;
+                current_offset = std.mem.alignForward(u16, current_offset, align_val);
+
+                const name_dup = self.fy.fyalloc.dupe(u8, field_name) catch return Error.OutOfMemory;
+                fields_list.append(FieldDef{
+                    .name = name_dup,
+                    .offset = current_offset,
+                    .field_type = field_type,
+                }) catch return Error.OutOfMemory;
+
+                current_offset += field_type.size();
+            }
+
+            // Round total size up to max alignment
+            const total_size: u16 = std.mem.alignForward(u16, current_offset, max_align);
+            const n_fields = fields_list.items.len;
+
+            // Store layout
+            const fields_owned = fields_list.toOwnedSlice() catch return Error.OutOfMemory;
+            const name_owned = self.fy.fyalloc.dupe(u8, struct_name) catch return Error.OutOfMemory;
+            self.fy.struct_layouts.append(StructLayout{
+                .name = name_owned,
+                .size = total_size,
+                .fields = fields_owned,
+            }) catch return Error.OutOfMemory;
+
+            const alloc_mem_addr: u64 = @intFromPtr(&Builtins.allocMem);
+
+            // --- Generate S.size ---
+            {
+                var c = Compiler.init(self.fy, self.parser);
+                defer c.deinit();
+                try c.enterPersist();
+                try c.emitNumber(@as(u64, total_size), 0);
+                try c.emitPush();
+                try c.leavePersist();
+                const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+
+                // Build name "StructName.size"
+                const sz_name = self.fy.fyalloc.alloc(u8, struct_name.len + 5) catch return Error.OutOfMemory;
+                @memcpy(sz_name[0..struct_name.len], struct_name);
+                @memcpy(sz_name[struct_name.len..], ".size");
+                try self.registerGeneratedWord(sz_name, code);
+                self.fy.fyalloc.free(sz_name);
+            }
+
+            // --- Generate S.alloc ---
+            {
+                var c = Compiler.init(self.fy, self.parser);
+                defer c.deinit();
+                try c.enterPersist();
+                // x0 = total_size (argument to allocMem)
+                try c.emitNumber(@as(u64, total_size), 0);
+                // Load allocMem address into x17 and call
+                try c.emitPtr(alloc_mem_addr, 17);
+                try c.emit(Asm.@"blr Xn"(17));
+                // x0 = zeroed pointer, push it
+                try c.emitPush();
+                try c.leavePersist();
+                const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+
+                const alloc_name = self.fy.fyalloc.alloc(u8, struct_name.len + 6) catch return Error.OutOfMemory;
+                @memcpy(alloc_name[0..struct_name.len], struct_name);
+                @memcpy(alloc_name[struct_name.len..], ".alloc");
+                try self.registerGeneratedWord(alloc_name, code);
+                self.fy.fyalloc.free(alloc_name);
+            }
+
+            // --- Generate S.new ---
+            {
+                var c = Compiler.init(self.fy, self.parser);
+                defer c.deinit();
+                try c.enterPersist();
+
+                // 1. Call alloc(total_size)
+                try c.emitNumber(@as(u64, total_size), 0);
+                try c.emitPtr(alloc_mem_addr, 17);
+                try c.emit(Asm.@"blr Xn"(17));
+                // x0 = struct pointer, save in x9 (safe: no more function calls follow)
+                try c.emit(Asm.@"mov Xd, Xn"(9, 0));
+
+                // 2. Pop and store each field in reverse order (TOS = last field)
+                var fi: usize = n_fields;
+                while (fi > 0) {
+                    fi -= 1;
+                    const field = fields_owned[fi];
+                    const off: u12 = @intCast(field.offset);
+
+                    // Pop value from data stack into x0
+                    try c.emit(Asm.@".pop x0");
+
+                    // Store at [x9, #offset] with correct instruction for field type
+                    switch (field.field_type) {
+                        .i8, .u8 => {
+                            try c.emit(Asm.strb_imm(0, 9, off));
+                        },
+                        .i16, .u16 => {
+                            try c.emit(Asm.strh_imm(0, 9, off));
+                        },
+                        .i32, .u32 => {
+                            try c.emit(Asm.str_w_imm(0, 9, off));
+                        },
+                        .i64, .u64, .ptr => {
+                            try c.emit(Asm.str_x_imm(0, 9, off));
+                        },
+                        .f32 => {
+                            // x0 has f64 bits; convert to f32 and store
+                            try c.emit(Asm.@"fmov Dd, Xn"(0, 0)); // fmov d0, x0
+                            try c.emit(Asm.@"fcvt Sd, Dn"(0, 0)); // fcvt s0, d0
+                            try c.emit(Asm.str_s_imm(0, 9, off)); // str s0, [x9, #off]
+                        },
+                        .f64 => {
+                            // x0 has f64 bits; move to d0 and store
+                            try c.emit(Asm.@"fmov Dd, Xn"(0, 0)); // fmov d0, x0
+                            try c.emit(Asm.str_d_imm(0, 9, off)); // str d0, [x9, #off]
+                        },
+                    }
+                }
+
+                // 3. Push struct pointer
+                try c.emit(Asm.@"mov Xd, Xn"(0, 9)); // mov x0, x9
+                try c.emitPush();
+                try c.leavePersist();
+                const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+
+                const new_name = self.fy.fyalloc.alloc(u8, struct_name.len + 4) catch return Error.OutOfMemory;
+                @memcpy(new_name[0..struct_name.len], struct_name);
+                @memcpy(new_name[struct_name.len..], ".new");
+                try self.registerGeneratedWord(new_name, code);
+                self.fy.fyalloc.free(new_name);
+            }
+        }
+
         fn compileDefinition(self: *Compiler) Error!void {
             const name = try self.parser.nextToken();
             if (name) |n| {
@@ -2527,8 +2884,12 @@ const Fy = struct {
                             try self.emitPush();
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "sig:")) {
-                            try self.compileSigCall();
+                        if (std.mem.eql(u8, w, "bind:") or std.mem.eql(u8, w, "sig:")) {
+                            try self.compileBind();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "struct:")) {
+                            try self.compileStruct();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "include")) {

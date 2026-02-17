@@ -26,6 +26,7 @@
 :: _GetTime _lib "GetTime" dl-sym ;
 :: _GetFrameTime _lib "GetFrameTime" dl-sym ;
 :: _IsKeyDown _lib "IsKeyDown" dl-sym ;
+:: _DrawFPS _lib "DrawFPS" dl-sym ;
 
 : InitWindow  _InitWindow sig: iii:v ;
 : CloseWindow  _CloseWindow sig: :v ;
@@ -51,5 +52,6 @@
 : GetTime  _GetTime sig: :d ;
 : GetFrameTime  _GetFrameTime sig: :f ;
 : IsKeyDown  _IsKeyDown sig: i:i ;
+: DrawFPS  _DrawFPS sig: ii:v ;
 
 ( End of auto-generated bindings )
