@@ -1657,6 +1657,10 @@ const Fy = struct {
                 return Token{ .Number = charValue };
             }
             if (c == ':') {
+                if (self.pos + 1 < self.code.len and self.code[self.pos + 1] == ':') {
+                    self.pos += 2;
+                    return Token{ .Word = "::" };
+                }
                 self.pos += 1;
                 return Token{ .Word = Word.DEFINE };
             }
@@ -2469,7 +2473,7 @@ const Fy = struct {
                             try self.compileDefinition();
                             continue;
                         }
-                        if (std.mem.eql(u8, w, "constant")) {
+                        if (std.mem.eql(u8, w, "::")) {
                             try self.compileConstant();
                             continue;
                         }

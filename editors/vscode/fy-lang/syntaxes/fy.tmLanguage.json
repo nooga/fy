@@ -1,0 +1,152 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "fy",
+  "scopeName": "source.fy",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#shebang" },
+    { "include": "#string" },
+    { "include": "#char-literal" },
+    { "include": "#constant-definition" },
+    { "include": "#word-definition" },
+    { "include": "#locals" },
+    { "include": "#number-float" },
+    { "include": "#number-integer" },
+    { "include": "#semicolon" },
+    { "include": "#brackets" },
+    { "include": "#directives" },
+    { "include": "#flow-control" },
+    { "include": "#operators" },
+    { "include": "#stack-ops" },
+    { "include": "#float-ops" },
+    { "include": "#ffi-words" },
+    { "include": "#io-words" },
+    { "include": "#quote-ops" },
+    { "include": "#type-check" },
+    { "include": "#rstack" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.block.fy",
+      "begin": "\\(",
+      "end": "\\)",
+      "patterns": [
+        { "include": "#comment" }
+      ]
+    },
+    "shebang": {
+      "name": "comment.line.shebang.fy",
+      "match": "\\A#!.*$"
+    },
+    "string": {
+      "name": "string.quoted.double.fy",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.fy",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "char-literal": {
+      "name": "constant.character.fy",
+      "match": "'[^\\s]"
+    },
+    "constant-definition": {
+      "match": "(::)\\s+([^\\s;]+)",
+      "captures": {
+        "1": { "name": "keyword.control.constant.fy" },
+        "2": { "name": "entity.name.function.constant.fy" }
+      }
+    },
+    "word-definition": {
+      "match": "(:)\\s+([^\\s;]+)",
+      "captures": {
+        "1": { "name": "keyword.control.definition.fy" },
+        "2": { "name": "entity.name.function.fy" }
+      }
+    },
+    "locals": {
+      "name": "meta.locals.fy",
+      "begin": "(?<=\\[)\\s*(\\|)",
+      "end": "(\\|)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.locals.begin.fy" }
+      },
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.locals.end.fy" }
+      },
+      "patterns": [
+        {
+          "name": "variable.parameter.fy",
+          "match": "[^\\s|]+"
+        }
+      ]
+    },
+    "number-float": {
+      "name": "constant.numeric.float.fy",
+      "match": "(?<=\\s|^)-?\\d+\\.\\d+(?=\\s|$|;|\\]|\\))"
+    },
+    "number-integer": {
+      "name": "constant.numeric.integer.fy",
+      "match": "(?<=\\s|^)-?\\d+(?=\\s|$|;|\\]|\\))"
+    },
+    "semicolon": {
+      "name": "keyword.control.end.fy",
+      "match": ";"
+    },
+    "brackets": {
+      "patterns": [
+        {
+          "name": "punctuation.section.brackets.begin.fy",
+          "match": "\\["
+        },
+        {
+          "name": "punctuation.section.brackets.end.fy",
+          "match": "\\]"
+        }
+      ]
+    },
+    "directives": {
+      "name": "keyword.other.directive.fy",
+      "match": "(?<=\\s|^)(sig:|include|import)(?=\\s|$)"
+    },
+    "flow-control": {
+      "name": "keyword.control.flow.fy",
+      "match": "(?<=\\s|^)(ifte|do\\?|do|times|dotimes|repeat|recur|not|dip)(?=\\s|$|;|\\])"
+    },
+    "operators": {
+      "name": "keyword.operator.fy",
+      "match": "(?<=\\s|^)(\\+|\\!-|-|\\*|/|<=|>=|!=|=|<|>|&|or|xor|<<|>>|1\\+|1-)(?=\\s|$|;|\\])"
+    },
+    "stack-ops": {
+      "name": "support.function.stack.fy",
+      "match": "(?<=\\s|^)(dup2|dup|swap|drop2|drop|over2|over|nip|tuck|rot|-rot|depth)(?=\\s|$|;|\\])"
+    },
+    "float-ops": {
+      "name": "support.function.float.fy",
+      "match": "(?<=\\s|^)(f\\+|f-|f\\*|f/|f<|f>|f=|fneg|f\\.|i>f|f>i)(?=\\s|$|;|\\])"
+    },
+    "ffi-words": {
+      "name": "support.function.ffi.fy",
+      "match": "(?<=\\s|^)(dl-open|dl-sym|dl-close|cstr-new|cstr-free|with-cstr-q|with-cstr-f|with-cstr|ccall[0-3]|ccall1pac)(?=\\s|$|;|\\])"
+    },
+    "io-words": {
+      "name": "support.function.io.fy",
+      "match": "(?<=\\s|^)(\\.hex|\\.dbg|\\.nl|\\.c|\\.|spy|s\\+|slen|s\\.|slurp|spit|readln|gc)(?=\\s|$|;|\\])"
+    },
+    "quote-ops": {
+      "name": "support.function.quote.fy",
+      "match": "(?<=\\s|^)(cat|qcat|qlen|qempty\\?|qhead|qtail|qpush|qnil|map|reduce)(?=\\s|$|;|\\])"
+    },
+    "type-check": {
+      "name": "support.function.typecheck.fy",
+      "match": "(?<=\\s|^)(int\\?|string\\?)(?=\\s|$|;|\\])"
+    },
+    "rstack": {
+      "name": "support.function.rstack.fy",
+      "match": "(?<=\\s|^)(>r|r>|r@)(?=\\s|$|;|\\])"
+    }
+  }
+}

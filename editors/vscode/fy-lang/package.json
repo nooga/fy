@@ -1,0 +1,27 @@
+{
+  "name": "fy-lang",
+  "displayName": "fy",
+  "description": "Syntax highlighting for the fy programming language",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "fy",
+        "aliases": ["fy", "Fy"],
+        "extensions": [".fy"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fy",
+        "scopeName": "source.fy",
+        "path": "./syntaxes/fy.tmLanguage.json"
+      }
+    ]
+  }
+}

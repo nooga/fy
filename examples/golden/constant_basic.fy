@@ -1,6 +1,6 @@
-( Test constant - evaluate once, bake as literal )
-constant answer 42 ;
-constant pi 3.14159 ;
+( Test :: - evaluate once, bake as literal )
+:: answer 42 ;
+:: pi 3.14159 ;
 
 answer .
 answer .
