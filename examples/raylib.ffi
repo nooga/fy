@@ -2,7 +2,7 @@
 /opt/homebrew/lib/libraylib.dylib
 
 # Window management
-InitWindow       iii:v
+InitWindow       iis:v
 CloseWindow      :v
 WindowShouldClose :i
 SetTargetFPS     i:v
@@ -23,7 +23,7 @@ DrawRectangle    iiii4:v
 DrawRectangleLines iiii4:v
 
 # Text
-DrawText         iiii4:v
+DrawText         siii4:v
 DrawFPS          ii:v
 
 # 3D Camera

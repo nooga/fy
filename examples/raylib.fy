@@ -28,7 +28,7 @@
 :: _IsKeyDown _lib "IsKeyDown" dl-sym ;
 :: _DrawFPS _lib "DrawFPS" dl-sym ;
 
-: InitWindow  _InitWindow sig: iii:v ;
+: InitWindow  _InitWindow sig: iis:v ;
 : CloseWindow  _CloseWindow sig: :v ;
 : WindowShouldClose  _WindowShouldClose sig: :i ;
 : SetTargetFPS  _SetTargetFPS sig: i:v ;
@@ -43,7 +43,7 @@
 : DrawCircleLines  _DrawCircleLines sig: iif4:v ;
 : DrawRectangle  _DrawRectangle sig: iiii4:v ;
 : DrawRectangleLines  _DrawRectangleLines sig: iiii4:v ;
-: DrawText  _DrawText sig: iiii4:v ;
+: DrawText  _DrawText sig: siii4:v ;
 : BeginMode3D  _BeginMode3D sig: i:v ;
 : EndMode3D  _EndMode3D sig: :v ;
 : DrawCube  _DrawCube sig: ffffff4:v ;

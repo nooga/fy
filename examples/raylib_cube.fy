@@ -31,9 +31,7 @@ struct: Camera3D
   dup 8 + r> f!32              ( cam )           ( pos.z = cos(t)*8 )
 ;
 
-:: title "fy - Rotating Cube" cstr-new ;
-
-800 450 title raylib:InitWindow
+800 450 "fy - Rotating Cube" raylib:InitWindow
 60 raylib:SetTargetFPS
 
 :: cam
@@ -65,7 +63,7 @@ struct: Camera3D
       10 1.0 raylib:DrawGrid
     raylib:EndMode3D
 
-    title 10 10 20 DARKGRAY raylib:DrawText
+    "fy - Rotating Cube" 10 10 20 DARKGRAY raylib:DrawText
     10 40 raylib:DrawFPS
   raylib:EndDrawing
 ;

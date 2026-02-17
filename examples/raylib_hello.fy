@@ -16,13 +16,13 @@ import "raylib"
 :: GREEN     0 228 48 255 rgba ;
 :: YELLOW    253 249 0 255 rgba ;
 
-800 600 "Hello from fy!" cstr-new raylib:InitWindow
+800 600 "Hello from fy!" raylib:InitWindow
 60 raylib:SetTargetFPS
 
 : frame
   raylib:BeginDrawing
     RAYWHITE raylib:ClearBackground
-    "Hello from fy!" cstr-new 280 180 30 DARKGRAY raylib:DrawText
+    "Hello from fy!" 280 180 30 DARKGRAY raylib:DrawText
     400 280 50.0 GREEN raylib:DrawCircle
     100 100 600 350 BLUE raylib:DrawRectangleLines
   raylib:EndDrawing
