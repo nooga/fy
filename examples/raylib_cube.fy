@@ -21,14 +21,12 @@ struct: Camera3D
 
 ( Update camera orbit position based on time )
 : update-camera ( cam -- cam )
-  raylib:GetTime                ( cam t )
-  dup libm:sin 8.0 f*          ( cam t cx )
-  over libm:cos 8.0 f*         ( cam t cx cz )
-  ( store position.x and position.z )
-  >r >r                        ( cam t  R: cz cx )
-  drop                          ( cam    R: cz cx )
-  dup 0 + r> f!32              ( cam    R: cz ) ( pos.x = sin(t)*8 )
-  dup 8 + r> f!32              ( cam )           ( pos.z = cos(t)*8 )
+  raylib:GetTime                          ( cam t )
+  dup libm:sin 8.0 f*                    ( cam t cx )
+  over libm:cos 8.0 f*                   ( cam t cx cz )
+  >r >r drop                             ( cam  R: cz cx )
+  r> swap Camera3D.position-x!           ( cam  R: cz )
+  r> swap Camera3D.position-z!           ( cam )
 ;
 
 800 450 "fy - Rotating Cube" raylib:InitWindow

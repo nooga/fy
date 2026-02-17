@@ -2748,6 +2748,90 @@ const Fy = struct {
                 try self.registerGeneratedWord(new_name, code);
                 self.fy.fyalloc.free(new_name);
             }
+
+            // --- Generate S.field! (store) and S.field@ (load) for each field ---
+            for (fields_owned) |field| {
+                const off: u12 = @intCast(field.offset);
+
+                // S.field! : ( value ptr -- ptr ) — store value into field, keep ptr
+                {
+                    var c = Compiler.init(self.fy, self.parser);
+                    defer c.deinit();
+                    try c.enterPersist();
+                    // pop ptr into x9, pop value into x0
+                    try c.emit(Asm.@".pop Xn"(9)); // ptr
+                    try c.emit(Asm.@".pop x0"); // value
+                    switch (field.field_type) {
+                        .i8, .u8 => try c.emit(Asm.strb_imm(0, 9, off)),
+                        .i16, .u16 => try c.emit(Asm.strh_imm(0, 9, off)),
+                        .i32, .u32 => try c.emit(Asm.str_w_imm(0, 9, off)),
+                        .i64, .u64, .ptr => try c.emit(Asm.str_x_imm(0, 9, off)),
+                        .f32 => {
+                            try c.emit(Asm.@"fmov Dd, Xn"(0, 0));
+                            try c.emit(Asm.@"fcvt Sd, Dn"(0, 0));
+                            try c.emit(Asm.str_s_imm(0, 9, off));
+                        },
+                        .f64 => {
+                            try c.emit(Asm.@"fmov Dd, Xn"(0, 0));
+                            try c.emit(Asm.str_d_imm(0, 9, off));
+                        },
+                    }
+                    // push ptr back
+                    try c.emit(Asm.@"mov Xd, Xn"(0, 9));
+                    try c.emitPush();
+                    try c.leavePersist();
+                    const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+
+                    // "StructName.field-name!"
+                    const store_name = self.fy.fyalloc.alloc(u8, struct_name.len + 1 + field.name.len + 1) catch return Error.OutOfMemory;
+                    @memcpy(store_name[0..struct_name.len], struct_name);
+                    store_name[struct_name.len] = '.';
+                    @memcpy(store_name[struct_name.len + 1 ..][0..field.name.len], field.name);
+                    store_name[struct_name.len + 1 + field.name.len] = '!';
+                    try self.registerGeneratedWord(store_name, code);
+                    self.fy.fyalloc.free(store_name);
+                }
+
+                // S.field@ : ( ptr -- ptr value ) — read field, keep ptr
+                {
+                    var c = Compiler.init(self.fy, self.parser);
+                    defer c.deinit();
+                    try c.enterPersist();
+                    // peek ptr (pop + push back)
+                    try c.emit(Asm.@".pop Xn"(9)); // ptr
+                    try c.emit(Asm.@"mov Xd, Xn"(0, 9));
+                    try c.emitPush(); // push ptr back
+                    switch (field.field_type) {
+                        .i8 => try c.emit(Asm.ldrb_imm(0, 9, off)),
+                        .u8 => try c.emit(Asm.ldrb_imm(0, 9, off)),
+                        .i16 => try c.emit(Asm.ldrh_imm(0, 9, off)),
+                        .u16 => try c.emit(Asm.ldrh_imm(0, 9, off)),
+                        .i32, .u32 => try c.emit(Asm.ldr_w_imm(0, 9, off)),
+                        .i64, .u64, .ptr => try c.emit(Asm.ldr_x_imm(0, 9, off)),
+                        .f32 => {
+                            try c.emit(Asm.ldr_s_imm(0, 9, off));
+                            try c.emit(Asm.@"fcvt Dd, Sn"(0, 0));
+                            try c.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                        },
+                        .f64 => {
+                            try c.emit(Asm.ldr_d_imm(0, 9, off));
+                            try c.emit(Asm.@"fmov Xd, Dn"(0, 0));
+                        },
+                    }
+                    try c.emitPush(); // push value
+                    try c.leavePersist();
+                    const code = c.code.toOwnedSlice() catch return Error.OutOfMemory;
+
+                    // "StructName.field-name@"
+                    const load_name = self.fy.fyalloc.alloc(u8, struct_name.len + 1 + field.name.len + 1) catch return Error.OutOfMemory;
+                    @memcpy(load_name[0..struct_name.len], struct_name);
+                    load_name[struct_name.len] = '.';
+                    @memcpy(load_name[struct_name.len + 1 ..][0..field.name.len], field.name);
+                    load_name[struct_name.len + 1 + field.name.len] = '@';
+                    try self.registerGeneratedWord(load_name, code);
+                    self.fy.fyalloc.free(load_name);
+                }
+            }
         }
 
         fn compileDefinition(self: *Compiler) Error!void {
