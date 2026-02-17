@@ -301,3 +301,27 @@ pub fn ldr_d_imm(rt: u5, rn: u5, offset_bytes: u12) u32 {
     const scaled: u32 = @as(u32, offset_bytes) >> 3;
     return 0xFD400000 | (scaled << 10) | (@as(u32, rn) << 5) | @as(u32, rt);
 }
+
+// --- Helpers for callback trampolines ---
+
+/// MOVZ Xd, #imm16, LSL #shift — load 16-bit immediate, zero others
+pub fn movz(rd: u5, imm16: u16, shift: u6) u32 {
+    const hw: u32 = @as(u32, shift) >> 4; // 0,16,32,48 → 0,1,2,3
+    return 0xd2800000 | (hw << 21) | (@as(u32, imm16) << 5) | @as(u32, rd);
+}
+
+/// MOVK Xd, #imm16, LSL #shift — keep other bits, insert 16-bit immediate
+pub fn movk(rd: u5, imm16: u16, shift: u6) u32 {
+    const hw: u32 = @as(u32, shift) >> 4;
+    return 0xf2800000 | (hw << 21) | (@as(u32, imm16) << 5) | @as(u32, rd);
+}
+
+/// Emit a 4-instruction sequence to load a 64-bit immediate into Xd
+pub fn movImm64(rd: u5, val: u64) [4]u32 {
+    return .{
+        movz(rd, @truncate(val), 0),
+        movk(rd, @truncate(val >> 16), 16),
+        movk(rd, @truncate(val >> 32), 32),
+        movk(rd, @truncate(val >> 48), 48),
+    };
+}

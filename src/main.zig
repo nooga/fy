@@ -1191,11 +1191,11 @@ const Fy = struct {
         }
 
         // Memory operations
-        fn memStore32(val: Value, addr: Value) void {
+        fn memStore32(addr: Value, val: Value) void {
             const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = @truncate(@as(u64, @bitCast(val)));
         }
-        fn memStoreF32(val: Value, addr: Value) void {
+        fn memStoreF32(addr: Value, val: Value) void {
             const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             ptr.* = @floatCast(getFloat(val));
         }
@@ -2369,6 +2369,108 @@ const Fy = struct {
             }
         }
 
+        /// Compile `callback: signature word-name` — creates a C-callable trampoline
+        /// that bridges C calling convention → fy data stack → fy word → C return.
+        /// Pushes the trampoline's C function pointer onto the data stack.
+        fn compileCallback(self: *Compiler) Error!void {
+            // Read signature (e.g., "ii:i", "ff:d", ":v")
+            const sig = self.parser.nextRawWord() orelse return Error.UnexpectedEndOfInput;
+
+            // Read target word name
+            const word_tok = try self.parser.nextToken();
+            const word_name = switch (word_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            // Look up target word to get its JIT address
+            const word_info = self.fy.userWords.get(word_name) orelse return Error.UnknownWord;
+            const target_addr: u64 = @intCast(word_info.image_addr orelse return Error.UnknownWord);
+
+            // Parse signature
+            var args_part: []const u8 = "";
+            var ret_part: []const u8 = "i"; // default: integer return
+            for (sig, 0..) |ch, idx| {
+                if (ch == ':') {
+                    args_part = sig[0..idx];
+                    ret_part = sig[idx + 1 ..];
+                    break;
+                }
+            }
+
+            // Build trampoline code
+            var tramp = std.ArrayList(u32).init(self.fy.fyalloc);
+            defer tramp.deinit();
+
+            // Save frame
+            tramp.append(Asm.@"stp x29, x30, [sp, #0x10]!") catch return Error.OutOfMemory;
+
+            // Load target fy word address into x16
+            const target_instrs = Asm.movImm64(16, target_addr);
+            for (target_instrs) |instr| {
+                tramp.append(instr) catch return Error.OutOfMemory;
+            }
+
+            // Push C args onto fy data stack (in order: arg0 first = deepest)
+            // C integer args arrive in x0-x7, float args in s0-s7/d0-d7
+            var int_reg: u5 = 0;
+            var float_reg: u5 = 0;
+            for (args_part) |arg_type| {
+                switch (arg_type) {
+                    'i', 'p', '4' => {
+                        tramp.append(Asm.@".push Xn"(int_reg)) catch return Error.OutOfMemory;
+                        int_reg += 1;
+                    },
+                    'f' => {
+                        // C float in sN → widen to f64 → bitcast to i64 → push
+                        tramp.append(Asm.@"fcvt Dd, Sn"(float_reg, float_reg)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
+                        float_reg += 1;
+                    },
+                    'd' => {
+                        // C double in dN → bitcast to i64 → push
+                        tramp.append(Asm.@"fmov Xd, Dn"(9, float_reg)) catch return Error.OutOfMemory;
+                        tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
+                        float_reg += 1;
+                    },
+                    else => return Error.UnknownWord,
+                }
+            }
+
+            // Call fy word
+            tramp.append(Asm.@"blr Xn"(16)) catch return Error.OutOfMemory;
+
+            // Marshal return value
+            const is_void = ret_part.len == 0 or ret_part[0] == 'v';
+            if (!is_void) {
+                if (ret_part[0] == 'i' or ret_part[0] == 'p') {
+                    tramp.append(Asm.@".pop x0") catch return Error.OutOfMemory;
+                } else if (ret_part[0] == 'f') {
+                    tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"fcvt Sd, Dn"(0, 0)) catch return Error.OutOfMemory;
+                } else if (ret_part[0] == 'd') {
+                    tramp.append(Asm.@".pop Xn"(9)) catch return Error.OutOfMemory;
+                    tramp.append(Asm.@"fmov Dd, Xn"(0, 9)) catch return Error.OutOfMemory;
+                }
+            }
+
+            // Restore frame and return to C
+            tramp.append(Asm.@"ldp x29, x30, [sp], #0x10") catch return Error.OutOfMemory;
+            tramp.append(Asm.ret) catch return Error.OutOfMemory;
+
+            // Link trampoline into JIT image
+            const tramp_code = tramp.toOwnedSlice() catch return Error.OutOfMemory;
+            const tramp_entry = self.fy.image.link(tramp_code);
+            const tramp_fptr: u64 = @intCast(@intFromPtr(tramp_entry.ptr));
+            self.fy.fyalloc.free(tramp_code);
+
+            // Emit inline code: push trampoline address as constant
+            try self.emitNumber(tramp_fptr, 0);
+            try self.emitPush();
+        }
+
         /// Resolve a file path relative to the current compiler's base_dir.
         /// Returns allocated path that caller must free.
         fn resolveFilePath(self: *Compiler, raw_path: []const u8) ![]u8 {
@@ -2974,6 +3076,10 @@ const Fy = struct {
                         }
                         if (std.mem.eql(u8, w, "struct:")) {
                             try self.compileStruct();
+                            continue;
+                        }
+                        if (std.mem.eql(u8, w, "callback:")) {
+                            try self.compileCallback();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "include")) {
@@ -3750,4 +3856,30 @@ test "Adapter basic calls" {
     const q_inc2 = try c3.parseQuoteToHeap();
     const f_inc2_val = Fy.Builtins.resolveCallable(q_inc2);
     try std.testing.expect(Fy.isInt(f_inc2_val));
+}
+
+test "Memory operations - alloc, !32, @32, free" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    try runCases(&fy, &[_]TestCase{
+        // Store 42 at allocated address, load it back
+        .{ .input = "32 alloc dup 42 swap !32 @32", .expected = Fy.makeInt(42) },
+        // Store and load multiple values
+        .{ .input = "16 alloc dup 10 swap !32 dup 4 + 20 swap !32 dup @32 swap 4 + @32 +", .expected = Fy.makeInt(30) },
+        // Free returns 0
+        .{ .input = "8 alloc free", .expected = Fy.makeInt(0) },
+    });
+}
+
+test "Callbacks - callback: with ccall" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+
+    try runCases(&fy, &[_]TestCase{
+        // 1-arg callback
+        .{ .input = ": add-one 1 + ; :: cb callback: i:i add-one ; cb 41 ccall1", .expected = Fy.makeInt(42) },
+        // 2-arg callback
+        .{ .input = ": my-sub - ; :: sub-cb callback: ii:i my-sub ; sub-cb 10 3 ccall2", .expected = Fy.makeInt(7) },
+    });
 }
