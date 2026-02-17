@@ -1123,6 +1123,20 @@ const Fy = struct {
             return makeFloat(-getFloat(a));
         }
 
+        // Memory operations
+        fn memStore32(val: Value, addr: Value) void {
+            const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            ptr.* = @truncate(@as(u64, @bitCast(val)));
+        }
+        fn memStoreF32(val: Value, addr: Value) void {
+            const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            ptr.* = @floatCast(getFloat(val));
+        }
+        fn memLoad32(addr: Value) Value {
+            const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            return makeInt(@as(i64, ptr.*));
+        }
+
         // Resolve a callable: if int pointer, return as-is; if quote, JIT and cache
         fn resolveCallable(v: Value) Value {
             if (isInt(v)) return v;
@@ -1582,6 +1596,11 @@ const Fy = struct {
 
         // Alias: n q times → n q dotimes
         .{ "times", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".push x1", Asm.@".push x0", Asm.@".pop x1", Asm.@".pop x0" }, 2, 0) },
+
+        // Memory operations
+        .{ "!32", fnToWord(Builtins.memStore32) }, // (val addr -- )
+        .{ "f!32", fnToWord(Builtins.memStoreF32) }, // (fval addr -- )
+        .{ "@32", fnToWord(Builtins.memLoad32) }, // (addr -- val)
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {

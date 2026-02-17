@@ -18,6 +18,11 @@
 :: _DrawRectangle _lib "DrawRectangle" dl-sym ;
 :: _DrawRectangleLines _lib "DrawRectangleLines" dl-sym ;
 :: _DrawText _lib "DrawText" dl-sym ;
+:: _BeginMode3D _lib "BeginMode3D" dl-sym ;
+:: _EndMode3D _lib "EndMode3D" dl-sym ;
+:: _DrawCube _lib "DrawCube" dl-sym ;
+:: _DrawCubeWires _lib "DrawCubeWires" dl-sym ;
+:: _DrawGrid _lib "DrawGrid" dl-sym ;
 :: _GetTime _lib "GetTime" dl-sym ;
 :: _GetFrameTime _lib "GetFrameTime" dl-sym ;
 :: _IsKeyDown _lib "IsKeyDown" dl-sym ;
@@ -38,6 +43,11 @@
 : DrawRectangle  _DrawRectangle sig: iiii4:v ;
 : DrawRectangleLines  _DrawRectangleLines sig: iiii4:v ;
 : DrawText  _DrawText sig: iiii4:v ;
+: BeginMode3D  _BeginMode3D sig: i:v ;
+: EndMode3D  _EndMode3D sig: :v ;
+: DrawCube  _DrawCube sig: ffffff4:v ;
+: DrawCubeWires  _DrawCubeWires sig: ffffff4:v ;
+: DrawGrid  _DrawGrid sig: if:v ;
 : GetTime  _GetTime sig: :d ;
 : GetFrameTime  _GetFrameTime sig: :f ;
 : IsKeyDown  _IsKeyDown sig: i:i ;

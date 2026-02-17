@@ -25,6 +25,15 @@ DrawRectangleLines iiii4:v
 # Text
 DrawText         iiii4:v
 
+# 3D Camera
+BeginMode3D      i:v
+EndMode3D        :v
+
+# 3D Shapes (Vector3 is HFA: 3 floats in s0-s2)
+DrawCube         ffffff4:v
+DrawCubeWires    ffffff4:v
+DrawGrid         if:v
+
 # Timing
 GetTime          :d
 GetFrameTime     :f
