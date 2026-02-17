@@ -1945,11 +1945,11 @@ const Fy = struct {
                     // Namespace-aware lookup: if compiling inside a namespace,
                     // try "ns:word" first (for intra-module references), then bare "word"
                     const word = if (self.namespace) |ns| blk: {
-                        const prefixed = self.fy.fyalloc.alloc(u8, ns.len + w.len) catch return Error.OutOfMemory;
-                        defer self.fy.fyalloc.free(prefixed);
-                        @memcpy(prefixed[0..ns.len], ns);
-                        @memcpy(prefixed[ns.len..], w);
-                        break :blk self.fy.findWord(prefixed) orelse self.fy.findWord(w);
+                        var buf: [256]u8 = undefined;
+                        if (ns.len + w.len > buf.len) return Error.OutOfMemory;
+                        @memcpy(buf[0..ns.len], ns);
+                        @memcpy(buf[ns.len..][0..w.len], w);
+                        break :blk self.fy.findWord(buf[0 .. ns.len + w.len]) orelse self.fy.findWord(w);
                     } else self.fy.findWord(w);
                     if (word) |w_val| {
                         try self.emitWord(w_val);
@@ -2111,65 +2111,83 @@ const Fy = struct {
             }
 
             const n_args = args_part.len;
-            if (n_args > 7) return Error.OutOfMemory; // max 7 args (temp regs x9-x15)
+            if (n_args > 7) return Error.OutOfMemory; // max 7 args
 
-            // Phase 1: Pop fptr (TOS) into x16, then pop args into temp registers
-            // This convention means fptr is on top of args on the stack,
-            // which is natural for word definitions: `lib "fn" dl-sym sig: ...`
-            try self.emit(Asm.@".pop Xn"(16)); // fptr (TOS)
-            // Pop args in reverse order into temp registers x9..x(9+n_args-1)
-            var i: usize = n_args;
-            while (i > 0) {
-                i -= 1;
-                const temp_reg: u5 = @intCast(9 + i); // x9, x10, x11, ...
-                try self.emit(Asm.@".pop Xn"(temp_reg));
+            // Peephole: if the previous instruction pushed fptr to the stack,
+            // retract the push and mov x0 → x16 directly (saves push + pop)
+            if (self.prev == Asm.@".push x0" and self.code.items.len > 0) {
+                self.code.items.len -= 1; // retract the push
+                try self.emit(Asm.@"mov Xd, Xn"(16, 0)); // mov x16, x0
+            } else {
+                try self.emit(Asm.@".pop Xn"(16)); // fptr (TOS)
             }
 
-            // Phase 2: Route each temp register to the correct target register
-            var int_reg: u5 = 0; // x0, x1, x2, ...
-            var float_reg: u5 = 0; // d0/s0, d1/s1, ...
-            for (args_part, 0..) |arg_type, arg_idx| {
-                const temp_reg: u5 = @intCast(9 + arg_idx);
+            // Pre-compute target register for each arg position
+            var int_reg: u5 = 0;
+            var float_reg: u5 = 0;
+            var target_regs: [7]u5 = undefined;
+            var is_float_arg: [7]bool = undefined;
+            for (args_part, 0..) |arg_type, idx| {
                 switch (arg_type) {
                     'i', '4', 'p' => {
-                        // Integer/pointer/4-byte struct → next x register
-                        try self.emit(Asm.@"mov Xd, Xn"(int_reg, temp_reg));
+                        target_regs[idx] = int_reg;
+                        is_float_arg[idx] = false;
                         int_reg += 1;
                     },
-                    'f' => {
-                        // Float32: value on stack is f64 bits in i64.
-                        // Move to d register, then convert d→s for C ABI.
-                        try self.emit(Asm.@"fmov Dd, Xn"(float_reg, temp_reg));
-                        try self.emit(Asm.@"fcvt Sd, Dn"(float_reg, float_reg));
+                    'f', 'd' => {
+                        target_regs[idx] = float_reg;
+                        is_float_arg[idx] = true;
                         float_reg += 1;
                     },
-                    'd' => {
-                        // Float64: value on stack is f64 bits in i64. Move to d register.
-                        try self.emit(Asm.@"fmov Dd, Xn"(float_reg, temp_reg));
-                        float_reg += 1;
-                    },
-                    else => return Error.UnknownWord, // unknown type char
+                    else => return Error.UnknownWord,
                 }
             }
 
-            // Phase 3: Call
+            // Pop args in reverse order. Integer args go directly into target x
+            // registers (safe because each gets a unique sequential xN).
+            // Float args need a temp x reg for the fmov step.
+            var float_temps: [7]u5 = undefined;
+            var next_temp: u5 = 9;
+            var i: usize = n_args;
+            while (i > 0) {
+                i -= 1;
+                if (is_float_arg[i]) {
+                    try self.emit(Asm.@".pop Xn"(next_temp));
+                    float_temps[i] = next_temp;
+                    next_temp += 1;
+                } else {
+                    try self.emit(Asm.@".pop Xn"(target_regs[i]));
+                }
+            }
+
+            // Route float args from temp x registers to d/s registers
+            for (args_part, 0..) |arg_type, arg_idx| {
+                switch (arg_type) {
+                    'f' => {
+                        try self.emit(Asm.@"fmov Dd, Xn"(target_regs[arg_idx], float_temps[arg_idx]));
+                        try self.emit(Asm.@"fcvt Sd, Dn"(target_regs[arg_idx], target_regs[arg_idx]));
+                    },
+                    'd' => {
+                        try self.emit(Asm.@"fmov Dd, Xn"(target_regs[arg_idx], float_temps[arg_idx]));
+                    },
+                    else => {},
+                }
+            }
+
+            // Call
             try self.emit(Asm.@"blr Xn"(16));
 
-            // Phase 4: Handle return value
+            // Handle return value
             if (ret_part.len == 0 or ret_part[0] == 'v') {
-                // Void return — push 0
                 try self.emit(Asm.@"mov x0, #0");
                 try self.emitPush();
             } else if (ret_part[0] == 'i' or ret_part[0] == 'p') {
-                // Integer return — x0 already has the value
                 try self.emitPush();
             } else if (ret_part[0] == 'f') {
-                // Float32 return — s0 has result, convert to f64, move to x0
                 try self.emit(Asm.@"fcvt Dd, Sn"(0, 0));
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
                 try self.emitPush();
             } else if (ret_part[0] == 'd') {
-                // Float64 return — d0 has result, move to x0
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
                 try self.emitPush();
             } else {
