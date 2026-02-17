@@ -1,0 +1,33 @@
+# Raylib core bindings for fy
+/opt/homebrew/lib/libraylib.dylib
+
+# Window management
+InitWindow       iii:v
+CloseWindow      :v
+WindowShouldClose :i
+SetTargetFPS     i:v
+SetConfigFlags   i:v
+GetScreenWidth   :i
+GetScreenHeight  :i
+
+# Drawing
+BeginDrawing     :v
+EndDrawing       :v
+ClearBackground  4:v
+
+# Shapes
+DrawLine         iiii4:v
+DrawCircle       iif4:v
+DrawCircleLines  iif4:v
+DrawRectangle    iiii4:v
+DrawRectangleLines iiii4:v
+
+# Text
+DrawText         iiii4:v
+
+# Timing
+GetTime          :d
+GetFrameTime     :f
+
+# Input
+IsKeyDown        i:i

@@ -63,6 +63,10 @@ pub const @"sub x0, x1, x0" = 0xcb010000;
 pub const @"mul x0, x0, x1" = 0x9b017c00;
 pub const @"sdiv x0, x1, x0" = 0x9ac10c00;
 pub const @"and x0, x0, x1" = 0x8a010000;
+pub const @"orr x0, x0, x1" = 0xaa010000;
+pub const @"eor x0, x0, x1" = 0xca010000;
+pub const @"lsl x0, x1, x0" = 0x9ac02020; // LSLV x0, x1, x0 (Rd=0, Rn=1, Rm=0)
+pub const @"lsr x0, x1, x0" = 0x9ac02420; // LSRV x0, x1, x0 (Rd=0, Rn=1, Rm=0)
 
 pub const @"add x0, x0, #1" = 0x91000400;
 pub const @"sub x0, x0, #1" = 0xd1000400;

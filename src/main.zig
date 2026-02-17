@@ -882,7 +882,14 @@ const Fy = struct {
             const cbuf = allocCStr(fy.fyalloc, p) catch @panic("oom");
             defer fy.fyalloc.free(cbuf);
             const handle = posix_dl.dlopen(@ptrCast(cbuf.ptr), posix_dl.RTLD_NOW);
-            if (handle == null) return makeInt(0);
+            if (handle == null) {
+                const err = posix_dl.dlerror();
+                if (err != null) {
+                    const msg: [*:0]const u8 = @ptrCast(err);
+                    std.debug.print("dl-open error: {s}\n", .{msg});
+                }
+                return makeInt(0);
+            }
             const addr: usize = @intFromPtr(handle);
             return makeInt(@as(i64, @intCast(addr)));
         }
@@ -1292,6 +1299,14 @@ const Fy = struct {
         .{ "*", binOp(Asm.@"mul x0, x0, x1", false) },
         // a b -- a&b
         .{ "&", binOp(Asm.@"and x0, x0, x1", false) },
+        // a b -- a|b
+        .{ "or", binOp(Asm.@"orr x0, x0, x1", false) },
+        // a b -- a^b
+        .{ "xor", binOp(Asm.@"eor x0, x0, x1", false) },
+        // a b -- a<<b
+        .{ "<<", binOp(Asm.@"lsl x0, x1, x0", false) },
+        // a b -- a>>b
+        .{ ">>", binOp(Asm.@"lsr x0, x1, x0", false) },
         // a b -- a/b
         .{ "/", binOp(Asm.@"sdiv x0, x1, x0", true) },
         .{ "=", cmpOp(Asm.@"beq #2") },
@@ -1714,6 +1729,20 @@ const Fy = struct {
 
             return Token{ .Word = self.code[start..self.pos] };
         }
+
+        /// Read next whitespace-delimited token as raw text, bypassing number/punctuation parsing.
+        /// Used by sig: which needs to read signatures like "4:v", ":v", "iif4:v" verbatim.
+        fn nextRawWord(self: *Parser) ?[]const u8 {
+            while (self.pos < self.code.len and isWhitespace(self.code[self.pos])) {
+                self.pos += 1;
+            }
+            if (self.pos >= self.code.len) return null;
+            const start = self.pos;
+            while (self.pos < self.code.len and !isWhitespace(self.code[self.pos]) and self.code[self.pos] != ';' and self.code[self.pos] != ']') {
+                self.pos += 1;
+            }
+            return self.code[start..self.pos];
+        }
     };
 
     // compiler
@@ -2063,32 +2092,17 @@ const Fy = struct {
         /// Arg chars: i=int(x reg), f=float32(s reg), d=float64(d reg), 4=4-byte struct(x reg), p=pointer(x reg)
         /// Return chars: v=void(push 0), i=int(push x0), f=float32, d=float64
         fn compileSigCall(self: *Compiler) Error!void {
-            const sig_tok = try self.parser.nextToken();
-            const sig = switch (sig_tok orelse return Error.UnexpectedEndOfInput) {
-                .Word => |w| w,
-                else => return Error.ExpectedWord,
-            };
+            // Read signature as raw text to avoid tokenizer interpreting digits/colons
+            const sig = self.parser.nextRawWord() orelse return Error.UnexpectedEndOfInput;
 
             // Split signature on ':'
-            // Handle zero-arg case: ":" is tokenized as DEFINE, so sig == ":"
-            // and the return type is the next token (e.g., sig: :i → ":" then "i")
             var args_part: []const u8 = "";
             var ret_part: []const u8 = "i"; // default: integer return
-            if (std.mem.eql(u8, sig, ":")) {
-                // Zero-arg: read return type from next token
-                const ret_tok = try self.parser.nextToken();
-                ret_part = switch (ret_tok orelse return Error.UnexpectedEndOfInput) {
-                    .Word => |w| w,
-                    else => return Error.ExpectedWord,
-                };
-            } else {
-                args_part = sig;
-                for (sig, 0..) |ch, idx| {
-                    if (ch == ':') {
-                        args_part = sig[0..idx];
-                        ret_part = sig[idx + 1 ..];
-                        break;
-                    }
+            for (sig, 0..) |ch, idx| {
+                if (ch == ':') {
+                    args_part = sig[0..idx];
+                    ret_part = sig[idx + 1 ..];
+                    break;
                 }
             }
 
