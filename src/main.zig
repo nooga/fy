@@ -1203,6 +1203,26 @@ const Fy = struct {
             const ptr: *align(1) u32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
             return makeInt(@as(i64, ptr.*));
         }
+        fn memLoadF32(addr: Value) Value {
+            const ptr: *align(1) f32 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            return makeFloat(@as(f64, ptr.*));
+        }
+        fn memStore16(addr: Value, val: Value) void {
+            const ptr: *align(1) u16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            ptr.* = @truncate(@as(u64, @bitCast(val)));
+        }
+        fn memLoad16(addr: Value) Value {
+            const ptr: *align(1) i16 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            return makeInt(@as(i64, ptr.*)); // sign-extends
+        }
+        fn memStore64(addr: Value, val: Value) void {
+            const ptr: *align(1) i64 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            ptr.* = val;
+        }
+        fn memLoad64(addr: Value) Value {
+            const ptr: *align(1) i64 = @ptrFromInt(@as(usize, @intCast(getInt(addr))));
+            return ptr.*;
+        }
 
         // Resolve a callable: if int pointer, return as-is; if quote, JIT and cache
         fn resolveCallable(v: Value) Value {
@@ -1668,6 +1688,11 @@ const Fy = struct {
         .{ "!32", fnToWord(Builtins.memStore32) }, // (val addr -- )
         .{ "f!32", fnToWord(Builtins.memStoreF32) }, // (fval addr -- )
         .{ "@32", fnToWord(Builtins.memLoad32) }, // (addr -- val)
+        .{ "f@32", fnToWord(Builtins.memLoadF32) }, // (addr -- fval)
+        .{ "!16", fnToWord(Builtins.memStore16) }, // (val addr -- )
+        .{ "@16", fnToWord(Builtins.memLoad16) }, // (addr -- val)
+        .{ "!64", fnToWord(Builtins.memStore64) }, // (val addr -- )
+        .{ "@64", fnToWord(Builtins.memLoad64) }, // (addr -- val)
 
         // Raw memory allocation
         .{ "alloc", fnToWord(Builtins.allocMem) }, // ( size -- ptr )
@@ -2185,7 +2210,8 @@ const Fy = struct {
         /// Syntax: `bind: <arg-types>:<return-type>`
         /// Arg chars: i=int(x reg), f=float32(s reg), d=float64(d reg), 4=4-byte struct(x reg),
         ///            p=pointer(x reg), s=temp string(auto cstr, freed after call), S=persistent string(auto cstr)
-        /// Return chars: v=void(push 0), i=int(push x0), f=float32, d=float64
+        /// Return chars: v=void(push 0), i=int(push x0), f=float32, d=float64,
+        ///                S=struct via x8 (caller provides buffer ptr under args on stack)
         fn compileBind(self: *Compiler) Error!void {
             // Read signature as raw text to avoid tokenizer interpreting digits/colons
             const sig = self.parser.nextRawWord() orelse return Error.UnexpectedEndOfInput;
@@ -2218,6 +2244,12 @@ const Fy = struct {
                 const needed = (2 + temp_str_count) * 8;
                 break :blk @intCast((needed + 15) & ~@as(usize, 15)); // align to 16
             } else 0;
+
+            // Struct return via x8: caller provides buffer pointer under args on stack
+            const is_struct_ret = ret_part.len > 0 and ret_part[0] == 'S';
+            if (is_struct_ret) {
+                try self.emit(Asm.@".rpush Xn"(20)); // save callee-saved x20
+            }
 
             // Peephole: if the previous instruction pushed fptr to the stack,
             // retract the push and mov x0 → x16 directly (saves push + pop)
@@ -2325,6 +2357,12 @@ const Fy = struct {
                 }
             }
 
+            // Struct return: pop buffer ptr from stack into x20, set x8
+            if (is_struct_ret) {
+                try self.emit(Asm.@".pop Xn"(20)); // pop struct ptr (was under all args)
+                try self.emit(Asm.@"mov Xd, Xn"(8, 20)); // x8 = struct ptr for ABI
+            }
+
             // Call
             try self.emit(Asm.@"blr Xn"(16));
 
@@ -2332,6 +2370,9 @@ const Fy = struct {
             const is_void = ret_part.len == 0 or ret_part[0] == 'v';
             if (is_void) {
                 // void: don't push anything onto the data stack
+            } else if (is_struct_ret) {
+                // Struct return: x20 has the buffer ptr (callee-saved, survived blr)
+                try self.emit(Asm.@"mov Xd, Xn"(0, 20)); // x0 = struct ptr
             } else if (ret_part[0] == 'i' or ret_part[0] == 'p') {
                 // x0 already has the return value
             } else if (ret_part[0] == 'f') {
@@ -2367,6 +2408,10 @@ const Fy = struct {
             if (!is_void) {
                 try self.emitPush();
             }
+            // Restore x20 after push (struct return used it as callee-saved temp)
+            if (is_struct_ret) {
+                try self.emit(Asm.@".rpop Xn"(20)); // restore x20
+            }
         }
 
         /// Compile `callback: signature word-name` — creates a C-callable trampoline
@@ -2398,12 +2443,28 @@ const Fy = struct {
                 }
             }
 
+            // Allocate a private data stack for this callback (thread-safe).
+            // Each callback gets its own stack so it can be called from any thread
+            // (e.g., audio callback thread) without corrupting the main fy data stack.
+            const cb_stack_size: usize = 4096;
+            const cb_stack_ptr = c_std.malloc(cb_stack_size) orelse return Error.OutOfMemory;
+            @memset(@as([*]u8, @ptrCast(cb_stack_ptr))[0..cb_stack_size], 0);
+            const cb_stack_top: u64 = @intFromPtr(cb_stack_ptr) + cb_stack_size;
+
             // Build trampoline code
             var tramp = std.ArrayList(u32).init(self.fy.fyalloc);
             defer tramp.deinit();
 
-            // Save frame
+            // Save frame and fy data stack registers
             tramp.append(Asm.@"stp x29, x30, [sp, #0x10]!") catch return Error.OutOfMemory;
+            tramp.append(Asm.@"stp x21, x22, [sp, #0x10]!") catch return Error.OutOfMemory;
+
+            // Set up private data stack: x21 = x22 = top of callback stack
+            const stack_instrs = Asm.movImm64(21, cb_stack_top);
+            for (stack_instrs) |instr| {
+                tramp.append(instr) catch return Error.OutOfMemory;
+            }
+            tramp.append(Asm.@"mov Xd, Xn"(22, 21)) catch return Error.OutOfMemory;
 
             // Load target fy word address into x16
             const target_instrs = Asm.movImm64(16, target_addr);
@@ -2456,7 +2517,8 @@ const Fy = struct {
                 }
             }
 
-            // Restore frame and return to C
+            // Restore fy data stack registers and frame, return to C
+            tramp.append(Asm.@"ldp x21, x22, [sp], #0x10") catch return Error.OutOfMemory;
             tramp.append(Asm.@"ldp x29, x30, [sp], #0x10") catch return Error.OutOfMemory;
             tramp.append(Asm.ret) catch return Error.OutOfMemory;
 

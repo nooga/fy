@@ -125,6 +125,13 @@ pub const @".rpush x1" = @"str x1, [sp, #-16]!";
 pub const @".rpop x0" = @"ldr x0, [sp], #16";
 pub const @".rpop x1" = @"ldr x1, [sp], #16";
 
+pub fn @".rpush Xn"(n: usize) u32 {
+    return @"str x0, [sp, #-16]!" + @as(u32, @intCast(n));
+}
+pub fn @".rpop Xn"(n: usize) u32 {
+    return @"ldr x0, [sp], #16" + @as(u32, @intCast(n));
+}
+
 // register used to store call address: use x16 (caller-saved) for PLT/IP0
 pub const REGCALL = 16;
 

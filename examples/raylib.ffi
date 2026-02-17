@@ -41,3 +41,17 @@ GetFrameTime     :f
 
 # Input
 IsKeyDown        i:i
+IsKeyPressed     i:i
+
+# Audio
+InitAudioDevice  :v
+CloseAudioDevice :v
+SetMasterVolume  f:v
+SetAudioStreamBufferSizeDefault i:v
+SetAudioStreamCallback ip:v
+LoadAudioStream  iii:S
+UnloadAudioStream i:v
+PlayAudioStream  i:v
+StopAudioStream  i:v
+IsAudioStreamProcessed i:i
+UpdateAudioStream ipi:v
