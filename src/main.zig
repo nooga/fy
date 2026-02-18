@@ -535,6 +535,7 @@ const Fy = struct {
         callSlot0: ?*const anyopaque = null,
         callSlot3: ?*const anyopaque = null,
         image_addr: ?usize = null, // entry point in JIT image for BL-callable words
+        immediate: bool = false, // compile-time word (macro): execute instead of compile
 
         const DEFINE = ":";
         const END = ";";
@@ -929,6 +930,8 @@ const Fy = struct {
 
         // Keep a pointer to the Fy instance for string operations
         var fyPtr: usize = 0;
+        // Pointer to the active Compiler during macro expansion (0 when not in macro)
+        var compilerPtr: usize = 0;
 
         fn allocCStr(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
             var buf = try allocator.alloc(u8, bytes.len + 1);
@@ -1206,6 +1209,63 @@ const Fy = struct {
             if (!isStr(a)) return makeInt(1);
             const t = fy.heap.typeOf(a);
             return makeInt(@as(i64, @intFromBool(t == null)));
+        }
+
+        fn isQuote(a: Value) Value {
+            if (!isStr(a)) return makeInt(0);
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            const t = fy.heap.typeOf(a) orelse return makeInt(0);
+            return makeInt(@as(i64, @intFromBool(t == .Quote)));
+        }
+
+        fn isWordValue(a: Value) Value {
+            if (!isStr(a)) return makeInt(0);
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            const t = fy.heap.typeOf(a) orelse return makeInt(0);
+            if (t != .Quote) return makeInt(0);
+            const q = fy.heap.getQuote(a);
+            if (q.items.items.len != 1) return makeInt(0);
+            return makeInt(@as(i64, @intFromBool(q.items.items[0] == .Word)));
+        }
+
+        fn wordToStr(a: Value) Value {
+            if (!isStr(a)) return makeInt(0);
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            const t = fy.heap.typeOf(a) orelse return makeInt(0);
+            if (t != .Quote) return makeInt(0);
+            const q = fy.heap.getQuote(a);
+            if (q.items.items.len != 1) return makeInt(0);
+            switch (q.items.items[0]) {
+                .Word => |w| return fy.heap.storeString(w) catch @panic("word->str: store failed"),
+                else => return makeInt(0),
+            }
+        }
+
+        fn quoteNth(n: Value, q: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
+                @panic("qnth expects quote");
+            const qq = fy.heap.getQuote(q);
+            const idx: usize = @intCast(getInt(n));
+            if (idx >= qq.items.items.len) @panic("qnth index out of bounds");
+            return itemToValue(fy, qq.items.items[idx]);
+        }
+
+        fn quoteNthType(n: Value, q: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
+                @panic("qnth-type expects quote");
+            const qq = fy.heap.getQuote(q);
+            const idx: usize = @intCast(getInt(n));
+            if (idx >= qq.items.items.len) @panic("qnth-type index out of bounds");
+            const tag: i64 = switch (qq.items.items[idx]) {
+                .Number => 0,
+                .Float => 1,
+                .Word => 2,
+                .String => 3,
+                .Quote => 4,
+            };
+            return makeInt(tag);
         }
 
         // Float builtins — floats are f64 bitcast into i64 Value
@@ -1517,6 +1577,38 @@ const Fy = struct {
             }
             return fy.heap.storeQuote(items) catch @panic("heap store failed");
         }
+
+        // Compiler primitives for macros (only usable during macro expansion)
+        fn emitLit(value: Value) void {
+            if (compilerPtr == 0) @panic("emit-lit: not in macro context");
+            const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
+            const v: u64 = @bitCast(value);
+            compiler.emitNumber(v, 0) catch @panic("emit-lit: emitNumber failed");
+            compiler.emitPush() catch @panic("emit-lit: emitPush failed");
+        }
+
+        fn emitWordMacro(name_val: Value) void {
+            if (compilerPtr == 0) @panic("emit-word: not in macro context");
+            const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            const name = fy.heap.getString(name_val);
+            const word = fy.findWord(name) orelse @panic("emit-word: unknown word");
+            compiler.emitWord(word) catch @panic("emit-word: emitWord failed");
+        }
+
+        fn peekQuote() Value {
+            if (compilerPtr == 0) @panic("peek-quote: not in macro context");
+            const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
+            return compiler.lastQuote orelse makeInt(0);
+        }
+
+        fn macroUnpush() void {
+            if (compilerPtr == 0) @panic("unpush: not in macro context");
+            const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
+            if (compiler.lastQuote == null) @panic("unpush: no quote to remove");
+            compiler.code.shrinkRetainingCapacity(compiler.lastQuoteCodePos);
+            compiler.resetQuoteTracking();
+        }
     };
 
     const words = std.StaticStringMap(Word).initComptime(.{
@@ -1746,6 +1838,11 @@ const Fy = struct {
         .{ "slen", fnToWord(Builtins.strLen) }, // String length
         .{ "string?", fnToWord(Builtins.isString) }, // Check if value is string
         .{ "int?", fnToWord(Builtins.isInteger) }, // Check if value is integer
+        .{ "quote?", fnToWord(Builtins.isQuote) }, // Check if value is quote
+        .{ "word?", fnToWord(Builtins.isWordValue) }, // Check if value is word-wrapper quote
+        .{ "word->str", fnToWord(Builtins.wordToStr) }, // Extract word name as string
+        .{ "qnth", fnToWord(Builtins.quoteNth) }, // (q n -- value) nth item
+        .{ "qnth-type", fnToWord(Builtins.quoteNthType) }, // (q n -- type) 0=int 1=float 2=word 3=string 4=quote
 
         // Float arithmetic and conversion
         .{ "f+", fnToWord(Builtins.floatAdd) },
@@ -1832,6 +1929,12 @@ const Fy = struct {
         // Raw memory allocation
         .{ "alloc", fnToWord(Builtins.allocMem) }, // ( size -- ptr )
         .{ "free", fnToWord(Builtins.freeMem) }, // ( ptr -- 0 )
+
+        // Compiler primitives for macros
+        .{ "emit-lit", fnToWord(Builtins.emitLit) }, // (value --) emit push-literal code
+        .{ "emit-word", fnToWord(Builtins.emitWordMacro) }, // ("name" --) emit word call code
+        .{ "peek-quote", fnToWord(Builtins.peekQuote) }, // (-- quote|0) last compiled quote
+        .{ "unpush", fnToWord(Builtins.macroUnpush) }, // (--) remove last quote push
     });
 
     fn findWord(self: *Fy, word: []const u8) ?Word {
@@ -2936,6 +3039,46 @@ const Fy = struct {
             if (final_name) |fn_| self.fy.fyalloc.free(fn_);
         }
 
+        /// `macro: name body ;` — compile body as standalone function, register as immediate word.
+        /// When encountered during compilation, the macro is executed instead of compiled.
+        fn compileMacro(self: *Compiler) Error!void {
+            const name_tok = try self.parser.nextToken();
+            const mname = switch (name_tok orelse return Error.UnexpectedEndOfInput) {
+                .Word => |w| w,
+                else => return Error.ExpectedWord,
+            };
+
+            // Compile body as .Function (self-contained with fresh data stack)
+            var body_compiler = Compiler.init(self.fy, self.parser);
+            body_compiler.namespace = self.namespace;
+            defer body_compiler.deinit();
+            const body_code = try body_compiler.compile(.Function);
+
+            // Resolve relocations and link into JIT image
+            const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
+            body_compiler.resolveRelocations(link_base, body_code);
+            const body_exe = self.fy.image.link(body_code);
+            const entry_addr = @intFromPtr(body_exe.ptr);
+            self.fy.fyalloc.free(body_code);
+
+            // Apply namespace prefix if applicable
+            const final_name = if (self.namespace) |ns| blk: {
+                const prefixed = self.fy.fyalloc.alloc(u8, ns.len + mname.len) catch return Error.OutOfMemory;
+                @memcpy(prefixed[0..ns.len], ns);
+                @memcpy(prefixed[ns.len..], mname);
+                break :blk prefixed;
+            } else null;
+            const reg_name = final_name orelse mname;
+
+            // Register the word with immediate=true
+            try self.declareWord(reg_name);
+            if (self.fy.userWords.getPtr(reg_name)) |word| {
+                word.image_addr = entry_addr;
+                word.immediate = true;
+            }
+            if (final_name) |fn_| self.fy.fyalloc.free(fn_);
+        }
+
         fn parseFieldType(name: []const u8) ?FieldType {
             const map = std.StaticStringMap(FieldType).initComptime(.{
                 .{ "i8", .i8 },
@@ -3345,6 +3488,11 @@ const Fy = struct {
                             try self.compileConstant();
                             continue;
                         }
+                        if (std.mem.eql(u8, w, "macro:")) {
+                            self.resetQuoteTracking();
+                            try self.compileMacro();
+                            continue;
+                        }
                         // Self-recursion: emit BL back to own entry point
                         if (self.currentDef) |def_name| {
                             if (std.mem.eql(u8, w, def_name)) {
@@ -3429,6 +3577,20 @@ const Fy = struct {
                             self.resetQuoteTracking();
                             try self.compileImport();
                             continue;
+                        }
+                        // Check for immediate (macro) words — must be before resetQuoteTracking
+                        // so peek-quote/unpush can see the last compiled quote
+                        if (self.fy.findWord(w)) |iw| {
+                            if (iw.immediate) {
+                                const addr = iw.image_addr orelse @panic("immediate word missing image_addr");
+                                Builtins.fyPtr = @intFromPtr(self.fy);
+                                const saved = Builtins.compilerPtr;
+                                Builtins.compilerPtr = @intFromPtr(self);
+                                const macro_fn: *const fn () Value = @ptrFromInt(addr);
+                                _ = macro_fn();
+                                Builtins.compilerPtr = saved;
+                                continue;
+                            }
                         }
                     },
                     else => {},
@@ -4251,5 +4413,83 @@ test "Callbacks - callback: with ccall" {
         .{ .input = ": add-one 1 + ; :: cb callback: i:i add-one ; cb 41 ccall1", .expected = Fy.makeInt(42) },
         // 2-arg callback
         .{ .input = ": my-sub - ; :: sub-cb callback: ii:i my-sub ; sub-cb 10 3 ccall2", .expected = Fy.makeInt(7) },
+    });
+}
+
+test "Type introspection - quote?, word?, word->str" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "[1 2] quote?", .expected = Fy.makeInt(1) },
+        .{ .input = "42 quote?", .expected = Fy.makeInt(0) },
+        .{ .input = "\"hi\" quote?", .expected = Fy.makeInt(0) },
+        .{ .input = "[hello] qhead word?", .expected = Fy.makeInt(1) },
+        .{ .input = "42 word?", .expected = Fy.makeInt(0) },
+        .{ .input = "\"test\" word?", .expected = Fy.makeInt(0) },
+        .{ .input = "[1 2] word?", .expected = Fy.makeInt(0) },
+        // word->str returns string, test via slen
+        .{ .input = "[hello] qhead word->str slen", .expected = Fy.makeInt(5) },
+        .{ .input = "42 word->str", .expected = Fy.makeInt(0) },
+    });
+}
+
+test "Type introspection - qnth, qnth-type" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        // qnth — indexed access
+        .{ .input = "[10 20 30] 0 qnth", .expected = Fy.makeInt(10) },
+        .{ .input = "[10 20 30] 2 qnth", .expected = Fy.makeInt(30) },
+        // qnth-type — type tags: 0=int, 1=float, 2=word, 3=string, 4=quote
+        .{ .input = "[42] 0 qnth-type", .expected = Fy.makeInt(0) },
+        .{ .input = "[3.14] 0 qnth-type", .expected = Fy.makeInt(1) },
+        .{ .input = "[hello] 0 qnth-type", .expected = Fy.makeInt(2) },
+        .{ .input = "[\"test\"] 0 qnth-type", .expected = Fy.makeInt(3) },
+        .{ .input = "[[1 2]] 0 qnth-type", .expected = Fy.makeInt(4) },
+        // mixed quote
+        .{ .input = "[10 \"hi\" 2.5 foo [1]] 0 qnth-type", .expected = Fy.makeInt(0) },
+        .{ .input = "[10 \"hi\" 2.5 foo [1]] 1 qnth-type", .expected = Fy.makeInt(3) },
+        .{ .input = "[10 \"hi\" 2.5 foo [1]] 2 qnth-type", .expected = Fy.makeInt(1) },
+        .{ .input = "[10 \"hi\" 2.5 foo [1]] 3 qnth-type", .expected = Fy.makeInt(2) },
+        .{ .input = "[10 \"hi\" 2.5 foo [1]] 4 qnth-type", .expected = Fy.makeInt(4) },
+    });
+}
+
+test "Macros - emit-lit" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "macro: push42 42 emit-lit ; push42", .expected = Fy.makeInt(42) },
+        .{ .input = "macro: push10 5 5 + emit-lit ; push10", .expected = Fy.makeInt(10) },
+    });
+}
+
+test "Macros - emit-word" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        .{ .input = "macro: emit-add \"+\" emit-word ; 3 4 emit-add", .expected = Fy.makeInt(7) },
+        .{ .input = "macro: emit-dup \"dup\" emit-word ; 5 emit-dup +", .expected = Fy.makeInt(10) },
+    });
+}
+
+test "Macros - peek-quote and unpush" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        // const macro: compile-time evaluation of a quote
+        .{ .input = "macro: const peek-quote unpush do emit-lit ; [6 7 *] const", .expected = Fy.makeInt(42) },
+        .{ .input = "[3 4 +] const", .expected = Fy.makeInt(7) },
+        .{ .input = "[10 2 * 1 +] const", .expected = Fy.makeInt(21) },
     });
 }
