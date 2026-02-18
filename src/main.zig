@@ -2012,6 +2012,11 @@ const Fy = struct {
         base_dir: ?[]const u8 = null,
         // Namespace prefix for import (e.g., "raylib:" → all defs become "raylib:word")
         namespace: ?[]const u8 = null,
+        // Peephole: track last two quote literals for inline ifte/do
+        lastQuote: ?Value = null,
+        lastQuoteCodePos: usize = 0,
+        prevQuote: ?Value = null,
+        prevQuoteCodePos: usize = 0,
 
         const Relocation = struct {
             code_offset: usize, // index into code[] where BL placeholder lives
@@ -2076,6 +2081,90 @@ const Fy = struct {
         fn emit(self: *Compiler, instr: u32) !void {
             try self.code.append(instr);
             self.prev = instr;
+        }
+
+        fn resetQuoteTracking(self: *Compiler) void {
+            self.prevQuote = null;
+            self.lastQuote = null;
+        }
+
+        fn trackQuote(self: *Compiler, qv: Value) void {
+            self.prevQuote = self.lastQuote;
+            self.prevQuoteCodePos = self.lastQuoteCodePos;
+            self.lastQuote = qv;
+            self.lastQuoteCodePos = self.code.items.len;
+        }
+
+        /// Check if a quote's body can be inlined (all words resolvable, no locals).
+        fn canInlineQuote(self: *Compiler, qv: Value) bool {
+            const q = self.fy.heap.getQuote(qv);
+            if (q.locals_names.items.len > 0) return false;
+            for (q.items.items) |it| switch (it) {
+                .Word => |w| {
+                    const word = if (self.namespace) |ns| blk: {
+                        var buf: [256]u8 = undefined;
+                        if (ns.len + w.len > buf.len) break :blk self.fy.findWord(w);
+                        @memcpy(buf[0..ns.len], ns);
+                        @memcpy(buf[ns.len..][0..w.len], w);
+                        break :blk self.fy.findWord(buf[0 .. ns.len + w.len]) orelse self.fy.findWord(w);
+                    } else self.fy.findWord(w);
+                    if (word == null) {
+                        // Allow self-recursion
+                        if (self.currentDef) |def_name| {
+                            if (std.mem.eql(u8, def_name, w)) continue;
+                        }
+                        return false;
+                    }
+                },
+                else => {},
+            };
+            return true;
+        }
+
+        /// Emit a quote's body items inline (no function prologue/epilogue).
+        /// Caller must check canInlineQuote() first.
+        fn emitQuoteBodyInline(self: *Compiler, qv: Value) Error!void {
+            const q = self.fy.heap.getQuote(qv);
+            for (q.items.items) |it| switch (it) {
+                .Number => |n| {
+                    try self.emitNumber(@as(u64, @bitCast(Fy.makeInt(n))), 0);
+                    try self.emitPush();
+                },
+                .Float => |f| {
+                    try self.emitNumber(@as(u64, @bitCast(Fy.makeFloat(f))), 0);
+                    try self.emitPush();
+                },
+                .Word => |w| {
+                    // Namespace-aware lookup (same as compileToken)
+                    const word = if (self.namespace) |ns| blk: {
+                        var buf: [256]u8 = undefined;
+                        if (ns.len + w.len > buf.len) return Error.OutOfMemory;
+                        @memcpy(buf[0..ns.len], ns);
+                        @memcpy(buf[ns.len..][0..w.len], w);
+                        break :blk self.fy.findWord(buf[0 .. ns.len + w.len]) orelse self.fy.findWord(w);
+                    } else self.fy.findWord(w);
+                    // Self-recursion in inline quote body
+                    if (word == null) {
+                        if (self.currentDef) |def_name| {
+                            if (std.mem.eql(u8, def_name, w)) {
+                                try self.emitBL(SELF_CALL);
+                                continue;
+                            }
+                        }
+                    }
+                    if (word) |wd| try self.emitWord(wd) else return Error.UnknownWord;
+                },
+                .String => |s| {
+                    const v = try self.fy.heap.storeString(s);
+                    self.fy.heap.addRoot(Fy.getStrId(v));
+                    try self.emitNumber(@as(u64, @bitCast(v)), 0);
+                    try self.emitPush();
+                },
+                .Quote => |nested_qv| {
+                    try self.emitNumber(@as(u64, @bitCast(nested_qv)), 0);
+                    try self.emitPush();
+                },
+            };
         }
 
         fn emitWord(self: *Compiler, word: Word) !void {
@@ -3247,49 +3336,104 @@ const Fy = struct {
                             break;
                         }
                         if (std.mem.eql(u8, w, Word.DEFINE)) {
+                            self.resetQuoteTracking();
                             try self.compileDefinition();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "::")) {
+                            self.resetQuoteTracking();
                             try self.compileConstant();
                             continue;
                         }
                         // Self-recursion: emit BL back to own entry point
                         if (self.currentDef) |def_name| {
                             if (std.mem.eql(u8, w, def_name)) {
+                                self.resetQuoteTracking();
                                 try self.emitBL(SELF_CALL);
                                 continue;
                             }
                         }
                         if (std.mem.eql(u8, w, Word.QUOTE_OPEN)) {
                             const qv = try self.parseQuoteToHeap();
+                            self.trackQuote(qv);
                             try self.emitNumber(@as(u64, @bitCast(qv)), 0);
                             try self.emitPush();
                             continue;
                         }
+                        // Peephole: [true] [false] ifte → inline conditional branch
+                        if (std.mem.eql(u8, w, "ifte")) {
+                            if (self.prevQuote != null and self.lastQuote != null) {
+                                const true_qv = self.prevQuote.?;
+                                const false_qv = self.lastQuote.?;
+                                if (self.canInlineQuote(true_qv) and self.canInlineQuote(false_qv)) {
+                                    // Roll back the two quote pushes
+                                    self.code.shrinkRetainingCapacity(self.prevQuoteCodePos);
+                                    // Pop condition
+                                    try self.emit(Asm.@".pop x0");
+                                    // cbz x0, else_branch (placeholder, patched below)
+                                    const cbz_pos = self.code.items.len;
+                                    try self.emit(0); // placeholder
+                                    // True branch body
+                                    try self.emitQuoteBodyInline(true_qv);
+                                    // b end (placeholder, patched below)
+                                    const b_pos = self.code.items.len;
+                                    try self.emit(0); // placeholder
+                                    // Else label
+                                    const else_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(cbz_pos)));
+                                    self.code.items[cbz_pos] = Asm.@"cbz Xn, offset"(0, @intCast(else_off));
+                                    // False branch body
+                                    try self.emitQuoteBodyInline(false_qv);
+                                    // End label — patch the b
+                                    const end_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(b_pos)));
+                                    self.code.items[b_pos] = Asm.@"b offset"(end_off);
+                                    self.resetQuoteTracking();
+                                    continue;
+                                }
+                            }
+                            self.resetQuoteTracking();
+                        }
+                        // Peephole: [body] do → inline body
+                        if (std.mem.eql(u8, w, "do")) {
+                            if (self.lastQuote) |qv| {
+                                if (self.canInlineQuote(qv)) {
+                                    // Roll back the quote push
+                                    self.code.shrinkRetainingCapacity(self.lastQuoteCodePos);
+                                    try self.emitQuoteBodyInline(qv);
+                                    self.resetQuoteTracking();
+                                    continue;
+                                }
+                            }
+                            self.resetQuoteTracking();
+                        }
                         if (std.mem.eql(u8, w, "bind:") or std.mem.eql(u8, w, "sig:")) {
+                            self.resetQuoteTracking();
                             try self.compileBind();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "struct:")) {
+                            self.resetQuoteTracking();
                             try self.compileStruct();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "callback:")) {
+                            self.resetQuoteTracking();
                             try self.compileCallback();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "include")) {
+                            self.resetQuoteTracking();
                             try self.compileInclude();
                             continue;
                         }
                         if (std.mem.eql(u8, w, "import")) {
+                            self.resetQuoteTracking();
                             try self.compileImport();
                             continue;
                         }
                     },
                     else => {},
                 }
+                self.resetQuoteTracking();
                 try self.compileToken(token.?);
             }
             switch (wrap) {
