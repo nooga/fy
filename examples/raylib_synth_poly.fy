@@ -22,6 +22,10 @@ import "raylib"
 :: SUSTAIN 0.4    ;   ( sustain level     )
 :: RELEASE 0.0001 ;   ( ~90ms to silence  )
 
+( --- Vibrato LFO --- )
+:: VIB_RATE  6.0 ;     ( LFO speed in Hz — classic organ range )
+:: VIB_DEPTH 0.003 ;   ( pitch deviation — subtle, organ-like )
+
 ( --- ADSR stages --- )
 :: IDLE 0 ;  :: ATK 1 ;  :: DEC 2 ;  :: SUS 3 ;  :: REL 4 ;
 
@@ -36,6 +40,7 @@ struct: Voice
 ;
 
 :: voices NUM_VOICES Voice.size * alloc ;
+:: lfo-phase 8 alloc ;
 : voice ( i -- addr ) Voice.size * voices + ;
 
 ( --- Initialize voices --- )
@@ -119,6 +124,7 @@ struct: AudioStream
     Voice.env@ >r
     Voice.phase@
     over Voice.freq@ nip
+    lfo-phase @64 libm:sin VIB_DEPTH f* 1.0 f+ f*
     TWO_PI f* SAMPLE_RATE f/ f+           ( va phase' )
     dup libm:sin r> f* 0.025 f* 32000.0 f* f>i  ( va phase' sample )
     -rot                                   ( sample va phase' )
@@ -137,6 +143,10 @@ struct: AudioStream
     1+
   ] dotimes
   drop
+  ( advance LFO phase )
+  lfo-phase @64 VIB_RATE TWO_PI f* SAMPLE_RATE f/ f+
+  dup TWO_PI f> [ TWO_PI f- ] [ ] ifte
+  lfo-phase !64
 ;
 
 ( --- Audio callback --- )

@@ -58,6 +58,8 @@ const Fy = struct {
     importedFiles: std.StringHashMap(void),
     data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
     data_stack_top: usize = 0, // x21/x22 init value = top of usable region
+    macro_data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
+    macro_data_stack_top: usize = 0, // separate stack for macro execution
     tramp_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
     tramp_stack_top: usize = 0,
     image: Image,
@@ -66,6 +68,7 @@ const Fy = struct {
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
+    const MACRO_STACK_PAGES = 2; // 8KB usable = 1024 values (for compile-time macros)
     const TRAMP_STACK_PAGES = 1; // 4KB usable = 512 values
 
     // Tagged value encoding:
@@ -181,6 +184,30 @@ const Fy = struct {
                 self.data_stack_top = @intFromPtr(mem.ptr) + page + usable;
             }
         }
+        // Macro data stack: [guard page][usable pages][guard page]
+        {
+            const usable = MACRO_STACK_PAGES * page;
+            const total = usable + 2 * page;
+            if (darwin) {
+                const raw = darwin_c.mmap(null, total, darwin_c.PROT_NONE, darwin_c.MAP_PRIVATE | darwin_c.MAP_ANON, -1, 0);
+                if (raw == darwin_c.MAP_FAILED) @panic("failed to allocate macro data stack");
+                const ptr: [*]align(page) u8 = @alignCast(@ptrCast(raw));
+                if (darwin_c.mprotect(@ptrCast(ptr + page), usable, darwin_c.PROT_READ | darwin_c.PROT_WRITE) != 0)
+                    @panic("failed to protect macro data stack");
+                self.macro_data_stack_mem = ptr;
+                self.macro_data_stack_top = @intFromPtr(ptr) + page + usable;
+            } else {
+                const flags: std.posix.MAP = .{ .TYPE = .PRIVATE, .ANONYMOUS = true };
+                const mem = std.posix.mmap(null, total, std.posix.PROT.NONE, flags, -1, 0) catch
+                    @panic("failed to allocate macro data stack");
+                const usable_ptr: [*]align(page) u8 = @alignCast(mem.ptr + page);
+                const usable_slice: []align(page) u8 = usable_ptr[0..usable];
+                std.posix.mprotect(usable_slice, .{ .READ = true, .WRITE = true }) catch
+                    @panic("failed to protect macro data stack");
+                self.macro_data_stack_mem = mem.ptr;
+                self.macro_data_stack_top = @intFromPtr(mem.ptr) + page + usable;
+            }
+        }
         // Tramp stack: [guard page][usable pages][guard page]
         {
             const usable = TRAMP_STACK_PAGES * page;
@@ -211,6 +238,15 @@ const Fy = struct {
         const page = std.mem.page_size;
         if (self.data_stack_mem) |ptr| {
             const total = DATA_STACK_PAGES * page + 2 * page;
+            if (darwin) {
+                _ = darwin_c.munmap(ptr, total);
+            } else {
+                const slice: []align(page) u8 = @alignCast(ptr[0..total]);
+                std.posix.munmap(slice);
+            }
+        }
+        if (self.macro_data_stack_mem) |ptr| {
+            const total = MACRO_STACK_PAGES * page + 2 * page;
             if (darwin) {
                 _ = darwin_c.munmap(ptr, total);
             } else {
@@ -1353,6 +1389,9 @@ const Fy = struct {
                     if (q.cached_ptr) |p| return makeInt(@as(i64, @intCast(p)));
                     const code = fy.compileQuote(q) catch @panic("compile quote failed");
                     const ptr: usize = @intFromPtr((fy.jit(code) catch @panic("jit failed")).call);
+                    // Re-obtain pointer: compileQuote may have grown the heap entries,
+                    // invalidating the old `q` pointer.
+                    q = fy.heap.getQuote(v);
                     q.cached_ptr = ptr;
                     return makeInt(@as(i64, @intCast(ptr)));
                 },
@@ -2255,7 +2294,21 @@ const Fy = struct {
                             }
                         }
                     }
-                    if (word) |wd| try self.emitWord(wd) else return Error.UnknownWord;
+                    if (word) |wd| {
+                        // Check for immediate (macro) words — invoke at compile time
+                        if (wd.immediate) {
+                            const addr = wd.image_addr orelse @panic("immediate word missing image_addr");
+                            Builtins.fyPtr = @intFromPtr(self.fy);
+                            const saved = Builtins.compilerPtr;
+                            Builtins.compilerPtr = @intFromPtr(self);
+                            const macro_fn: *const fn () Value = @ptrFromInt(addr);
+                            _ = macro_fn();
+                            Builtins.compilerPtr = saved;
+                        } else {
+                            self.resetQuoteTracking();
+                            try self.emitWord(wd);
+                        }
+                    } else return Error.UnknownWord;
                 },
                 .String => |s| {
                     const v = try self.fy.heap.storeString(s);
@@ -2264,6 +2317,7 @@ const Fy = struct {
                     try self.emitPush();
                 },
                 .Quote => |nested_qv| {
+                    self.trackQuote(nested_qv);
                     try self.emitNumber(@as(u64, @bitCast(nested_qv)), 0);
                     try self.emitPush();
                 },
@@ -2447,6 +2501,7 @@ const Fy = struct {
             None,
             Quote,
             Function,
+            Macro,
             SessionRet, // preserve x21/x22 across calls; return top-of-stack and pop it
             UserWord, // save/restore x29/x30 only; data stack (x21/x22) is shared
         };
@@ -3048,11 +3103,11 @@ const Fy = struct {
                 else => return Error.ExpectedWord,
             };
 
-            // Compile body as .Function (self-contained with fresh data stack)
+            // Compile body as .Macro (self-contained with separate macro data stack)
             var body_compiler = Compiler.init(self.fy, self.parser);
             body_compiler.namespace = self.namespace;
             defer body_compiler.deinit();
-            const body_code = try body_compiler.compile(.Function);
+            const body_code = try body_compiler.compile(.Macro);
 
             // Resolve relocations and link into JIT image
             const link_base = @intFromPtr(self.fy.image.mem.ptr) + self.fy.image.end;
@@ -3462,6 +3517,14 @@ const Fy = struct {
                     try self.emitNumber(0, 0);
                     try self.emitPush();
                 },
+                .Macro => {
+                    try self.enter();
+                    const stack_end = self.fy.macro_data_stack_top;
+                    try self.emitNumber(stack_end, 21);
+                    try self.emitNumber(stack_end, 22);
+                    try self.emitNumber(0, 0);
+                    try self.emitPush();
+                },
                 .SessionRet => {
                     // Preserve x21/x22; no reinit; no guard push
                     try self.enterPersist();
@@ -3604,6 +3667,10 @@ const Fy = struct {
                     try self.leavePersist();
                 },
                 .Function => {
+                    try self.emitPop();
+                    try self.leave();
+                },
+                .Macro => {
                     try self.emitPop();
                     try self.leave();
                 },
@@ -3779,7 +3846,21 @@ const Fy = struct {
                     try c.emit(Asm.ldr_sp_x0(off));
                     try c.emitPush();
                 } else {
-                    if (self.findWord(w)) |wd| try c.emitWord(wd) else return Compiler.Error.UnknownWord;
+                    if (self.findWord(w)) |wd| {
+                        // Check for immediate (macro) words — invoke at compile time
+                        if (wd.immediate) {
+                            const addr = wd.image_addr orelse @panic("immediate word missing image_addr");
+                            Builtins.fyPtr = @intFromPtr(self);
+                            const saved = Builtins.compilerPtr;
+                            Builtins.compilerPtr = @intFromPtr(&c);
+                            const macro_fn: *const fn () Value = @ptrFromInt(addr);
+                            _ = macro_fn();
+                            Builtins.compilerPtr = saved;
+                        } else {
+                            c.resetQuoteTracking();
+                            try c.emitWord(wd);
+                        }
+                    } else return Compiler.Error.UnknownWord;
                 }
             },
             .String => |s| {
@@ -3789,6 +3870,7 @@ const Fy = struct {
                 try c.emitPush();
             },
             .Quote => |qv| {
+                c.trackQuote(qv);
                 try c.emitNumber(@as(u64, @bitCast(qv)), 0);
                 try c.emitPush();
             },
