@@ -112,8 +112,6 @@ stream raylib:PlayAudioStream
   raylib:BeginDrawing
     RAYWHITE raylib:ClearBackground
     "fy - Audio Synthesizer" 50 20 30 DARKBLUE raylib:DrawText
-    "Press Z X C V B N M , . / to play notes" 50 60 20 DARKGRAY raylib:DrawText
-    "C4  D4  E4  F4  G4  A4  B4  C5  D5  E5" 50 85 16 LIGHTGRAY raylib:DrawText
 
     ( Waveform )
     50 150 690 260 LIGHTGRAY raylib:DrawRectangleLines

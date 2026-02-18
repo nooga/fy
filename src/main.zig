@@ -152,6 +152,7 @@ const Fy = struct {
         // Reset cached adapter pointers — they point into our (now-freed) image
         Builtins.adapt1 = null;
         Builtins.adapt2 = null;
+        Builtins.adapt1v = null;
     }
 
     fn initStacks(self: *Fy) void {
@@ -741,7 +742,20 @@ const Fy = struct {
                         items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
                     },
                     .Quote => {
-                        items.append(Heap.Item{ .Quote = x }) catch @panic("oom");
+                        // Inline single-item quotations (e.g. from \word syntax)
+                        const inner = fy.heap.getQuote(x);
+                        if (inner.items.items.len == 1) {
+                            const single = inner.items.items[0];
+                            switch (single) {
+                                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
+                                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                                .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch @panic("oom"),
+                                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
+                                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                            }
+                        } else {
+                            items.append(Heap.Item{ .Quote = x }) catch @panic("oom");
+                        }
                     },
                 } else @panic("qpush: invalid heap value");
             }
@@ -754,6 +768,50 @@ const Fy = struct {
             const items = std.ArrayList(Heap.Item).init(fy.fyalloc);
             return fy.heap.storeQuote(items) catch @panic("heap store failed");
         }
+
+        // range: ( n -- q ) create quote [0 1 2 ... n-1]
+        fn quoteRange(n: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            const count: usize = @intCast(getInt(n));
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            items.ensureTotalCapacity(count) catch @panic("oom");
+            for (0..count) |i| {
+                items.append(Heap.Item{ .Number = @intCast(i) }) catch @panic("oom");
+            }
+            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+        }
+
+        // curry: (val quot -- quot') prepend value to quote
+        fn quoteCurry(quot: Value, val: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(quot) or (fy.heap.typeOf(quot) orelse Heap.ObjType.String) != .Quote)
+                @panic("curry expects quote");
+            const qq = fy.heap.getQuote(quot);
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            items.ensureTotalCapacity(qq.items.items.len + 1) catch @panic("oom");
+            // Prepend val
+            if (isInt(val)) {
+                items.append(Heap.Item{ .Number = getInt(val) }) catch @panic("oom");
+            } else {
+                if (fy.heap.typeOf(val)) |t| switch (t) {
+                    .String => {
+                        const s = fy.heap.getString(val);
+                        items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
+                    },
+                    .Quote => items.append(Heap.Item{ .Quote = val }) catch @panic("oom"),
+                } else @panic("curry: invalid value");
+            }
+            // Copy items from quot
+            for (qq.items.items) |it| switch (it) {
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+            };
+            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+        }
+
         fn print(a: Value) void {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (isStr(a)) {
@@ -1245,6 +1303,7 @@ const Fy = struct {
         // and set up their own data stack from base/end parameters.
         var adapt1: ?*const fn (usize, Value, Value, Value) Value = null;
         var adapt2: ?*const fn (usize, Value, Value, Value, Value) Value = null;
+        var adapt1v: ?*const fn (usize, Value, Value, Value) void = null;
 
         fn getAdapt1(fy: *Fy) *const fn (usize, Value, Value, Value) Value {
             if (adapt1) |t| return t;
@@ -1311,6 +1370,31 @@ const Fy = struct {
             const addr: usize = @intFromPtr(fnptr.call);
             const typed: *const fn (usize, Value, Value, Value, Value) Value = @ptrFromInt(addr);
             adapt2 = typed;
+            return typed;
+        }
+
+        fn getAdapt1v(fy: *Fy) *const fn (usize, Value, Value, Value) void {
+            if (adapt1v) |t| return t;
+            const code = &[_]u32{
+                // x0=fptr, x1=base, x2=end, x3=a
+                Asm.@"stp x29, x30, [sp, #0x10]!",
+                Asm.@"stp x21, x22, [sp, #0x10]!",
+                Asm.@"mov x21, x1",
+                Asm.@"mov x22, x2",
+                Asm.@"mov x16, x0",
+                Asm.@"mov x0, x3",
+                Asm.@".push x0",
+                Asm.@"blr Xn"(16),
+                // Don't pop result — just restore and return
+                Asm.@"ldp x21, x22, [sp], #0x10",
+                Asm.@"ldp x29, x30, [sp], #0x10",
+                Asm.ret,
+            };
+            const buf = fy.fyalloc.dupe(u32, code[0..]) catch @panic("oom adapt1v");
+            const fnptr = fy.jit(buf) catch @panic("jit adapt1v failed");
+            const addr: usize = @intFromPtr(fnptr.call);
+            const typed: *const fn (usize, Value, Value, Value) void = @ptrFromInt(addr);
+            adapt1v = typed;
             return typed;
         }
 
@@ -1386,6 +1470,52 @@ const Fy = struct {
                 }
             }
             return acc;
+        }
+
+        // each: (list f -- 0) execute f for each element, discard results
+        fn beach(f: Value, list: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("each expects quote");
+            const fptr_val = resolveCallable(f);
+            if (!isInt(fptr_val)) @panic("each expects callable");
+            const fptr: usize = @intCast(getInt(fptr_val));
+            const adapt = getAdapt1v(fy);
+            const q = fy.heap.getQuote(list);
+            for (q.items.items) |it| {
+                const arg = itemToValue(fy, it);
+                const tramp_end_aligned: usize = fy.tramp_stack_top;
+                const base_val: Value = @bitCast(@as(i64, @intCast(tramp_end_aligned)));
+                adapt(fptr, base_val, base_val, arg);
+            }
+            return makeInt(0);
+        }
+
+        // filter: (list f -- list') keep elements where f returns non-zero
+        fn bfilter(f: Value, list: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("filter expects quote");
+            const fptr_val = resolveCallable(f);
+            if (!isInt(fptr_val)) @panic("filter expects callable");
+            const fptr: usize = @intCast(getInt(fptr_val));
+            const adapt = getAdapt1(fy);
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            const q = fy.heap.getQuote(list);
+            for (q.items.items) |it| {
+                const arg = itemToValue(fy, it);
+                const tramp_end_aligned: usize = fy.tramp_stack_top;
+                const base_val: Value = @bitCast(@as(i64, @intCast(tramp_end_aligned)));
+                const result = adapt(fptr, base_val, base_val, arg);
+                if (result != 0) {
+                    switch (it) {
+                        .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
+                        .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch @panic("oom"),
+                        .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
+                        .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
+                        .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                    }
+                }
+            }
+            return fy.heap.storeQuote(items) catch @panic("heap store failed");
         }
     };
 
@@ -1601,6 +1731,9 @@ const Fy = struct {
         .{ "qtail", fnToWord(Builtins.quoteTail) },
         .{ "qpush", fnToWord(Builtins.quotePush) },
         .{ "qnil", fnToWord(Builtins.quoteNil) },
+        .{ "range", fnToWord(Builtins.quoteRange) }, // (n -- [0..n-1])
+        .{ "curry", fnToWord(Builtins.quoteCurry) }, // (val quot -- quot') prepend value
+        .{ "compose", fnToWord(Builtins.quoteConcat) }, // alias for qcat
 
         // Reduce: acc list f -- result (Zig builtin)
         .{ "reduce", .{ .code = &[_]u32{ Asm.@".pop x0", Asm.@".pop x1", Asm.@".pop x2", Asm.CALLSLOT3, Asm.@".push x0" }, .c = 3, .p = 1, .callSlot3 = &Builtins.breduce } },
@@ -1608,6 +1741,8 @@ const Fy = struct {
         // Old ASM-loop version of map removed in favor of Zig builtin bmap.
         // Map: list f -- list' (Zig builtin)
         .{ "map", fnToWord(Builtins.bmap) },
+        .{ "each", fnToWord(Builtins.beach) }, // (list f -- 0) iterate, discard results
+        .{ "filter", fnToWord(Builtins.bfilter) }, // (list f -- list') keep matching
         .{ "slen", fnToWord(Builtins.strLen) }, // String length
         .{ "string?", fnToWord(Builtins.isString) }, // Check if value is string
         .{ "int?", fnToWord(Builtins.isInteger) }, // Check if value is integer
@@ -3873,6 +4008,35 @@ test "Map and reduce" {
         .{ .input = "0 [1 2 3] [+] reduce", .expected = Fy.makeInt(6) },
         // map with locals
         .{ .input = "[10 20 30] [ | n | n 1+ ] map qhead", .expected = Fy.makeInt(11) },
+    });
+}
+
+test "Curry, compose, each, filter" {
+    var fy = Fy.init(std.testing.allocator);
+    defer fy.deinit();
+    Fy.Builtins.fyPtr = @intFromPtr(&fy);
+
+    try runCases(&fy, &[_]TestCase{
+        // curry prepends value to quotation
+        .{ .input = "3 5 [+] curry do", .expected = Fy.makeInt(8) },
+        // compose chains two quotations
+        .{ .input = "3 [2 *] [1+] compose do", .expected = Fy.makeInt(7) },
+        // filter keeps matching elements
+        .{ .input = "[1 2 3 4 5] [3 >] filter qhead", .expected = Fy.makeInt(4) },
+        // filter length check
+        .{ .input = "[1 2 3 4 5] [3 >] filter qlen", .expected = Fy.makeInt(2) },
+        // each returns 0 (side-effect only)
+        .{ .input = "[1 2 3] [drop] each", .expected = Fy.makeInt(0) },
+        // qpush inlines single-item quotation (\ word syntax)
+        .{ .input = "[1 2] [+] qpush qlen", .expected = Fy.makeInt(3) },
+        // curry + map
+        .{ .input = "[1 2 3] 10 [+] curry map qhead", .expected = Fy.makeInt(11) },
+        // range generates [0..n-1]
+        .{ .input = "5 range qlen", .expected = Fy.makeInt(5) },
+        .{ .input = "5 range qhead", .expected = Fy.makeInt(0) },
+        .{ .input = "5 range qtail qhead", .expected = Fy.makeInt(1) },
+        // range + map
+        .{ .input = "5 range [1+] map qhead", .expected = Fy.makeInt(1) },
     });
 }
 
