@@ -18,7 +18,11 @@
 :: _DrawRectangle _lib "DrawRectangle" dl-sym ;
 :: _DrawRectangleLines _lib "DrawRectangleLines" dl-sym ;
 :: _DrawText _lib "DrawText" dl-sym ;
+:: _DrawTextEx _lib "DrawTextEx" dl-sym ;
 :: _DrawFPS _lib "DrawFPS" dl-sym ;
+:: _LoadFontEx _lib "LoadFontEx" dl-sym ;
+:: _UnloadFont _lib "UnloadFont" dl-sym ;
+:: _SetTextureFilter _lib "SetTextureFilter" dl-sym ;
 :: _BeginMode3D _lib "BeginMode3D" dl-sym ;
 :: _EndMode3D _lib "EndMode3D" dl-sym ;
 :: _DrawCube _lib "DrawCube" dl-sym ;
@@ -56,7 +60,11 @@
 : DrawRectangle  _DrawRectangle bind: iiii4:v ;
 : DrawRectangleLines  _DrawRectangleLines bind: iiii4:v ;
 : DrawText  _DrawText bind: siii4:v ;
+: DrawTextEx  _DrawTextEx bind: psffff4:v ;
 : DrawFPS  _DrawFPS bind: ii:v ;
+: LoadFontEx  _LoadFontEx bind: sipi:S ;
+: UnloadFont  _UnloadFont bind: p:v ;
+: SetTextureFilter  _SetTextureFilter bind: pi:v ;
 : BeginMode3D  _BeginMode3D bind: i:v ;
 : EndMode3D  _EndMode3D bind: :v ;
 : DrawCube  _DrawCube bind: ffffff4:v ;

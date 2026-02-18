@@ -4,10 +4,10 @@
 
 ## Requirements
 
+- **macOS on Apple Silicon** (M1/M2/M3/M4)
 - **Zig compiler** (0.13+)
-- **aarch64 machine** — Apple Silicon Mac, Raspberry Pi 4/5, or any 64-bit ARM Linux
 
-fy generates ARM64 machine code directly; there is no x86 backend.
+fy generates ARM64 machine code and uses macOS-specific JIT APIs (`MAP_JIT`, `pthread_jit_write_protect_np`). It does not run on Linux or x86.
 
 ## Building
 
@@ -17,9 +17,7 @@ cd fy
 zig build
 ```
 
-The binary lands at `./zig-out/bin/fy` (~1.8MB).
-
-On macOS, the build system handles code signing for JIT execution automatically.
+The binary lands at `./zig-out/bin/fy` (~1.8MB). The build system handles code signing for JIT execution automatically.
 
 ## Running
 

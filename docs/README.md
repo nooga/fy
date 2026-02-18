@@ -1,6 +1,6 @@
 # fy Language Documentation
 
-**fy** is a concatenative, stack-based programming language that JIT-compiles to native aarch64 machine code. The entire compiler fits in under 4,000 lines of Zig and produces a ~1.8MB binary with zero runtime dependencies.
+**fy** is a concatenative, stack-based programming language that JIT-compiles to native aarch64 machine code. It runs on **macOS on Apple Silicon**. The entire compiler fits in under 4,000 lines of Zig and produces a ~1.8MB binary with zero runtime dependencies.
 
 ## Table of Contents
 

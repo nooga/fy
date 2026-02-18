@@ -24,7 +24,15 @@ DrawRectangleLines iiii4:v
 
 # Text
 DrawText         siii4:v
+DrawTextEx       psffff4:v
 DrawFPS          ii:v
+
+# Fonts (Font struct is 48 bytes, passed by hidden ref on AArch64)
+LoadFontEx       sipi:S
+UnloadFont       p:v
+
+# Textures (Texture2D is 20 bytes, passed by hidden ref on AArch64)
+SetTextureFilter pi:v
 
 # 3D Camera
 BeginMode3D      i:v

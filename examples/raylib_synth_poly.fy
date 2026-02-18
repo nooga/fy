@@ -4,11 +4,9 @@ import "raylib"
 
 ( --- Colors --- )
 : rgba  24 << swap 16 << or swap 8 << or swap or ;
-:: RAYWHITE  245 245 245 255 rgba ;
-:: DARKGRAY  80 80 80 255 rgba ;
-:: LIGHTGRAY 200 200 200 255 rgba ;
-:: GREEN     0 228 48 255 rgba ;
-:: DARKBLUE  0 82 172 255 rgba ;
+:: BG     1 1 1 255 rgba ;
+:: FG     180 175 165 255 rgba ;
+:: AMBER  255 176 0 255 rgba ;
 
 ( --- Constants --- )
 :: MAX_SAMPLES_PER_UPDATE 4096 ;
@@ -148,7 +146,7 @@ struct: AudioStream
     over Voice.freq@ nip
     lfo-phase @64 libm:sin VIB_DEPTH f* 1.0 f+ f*
     TWO_PI f* SAMPLE_RATE f/ f+           ( va phase' )
-    dup libm:sin r> f* 0.025 f* 32000.0 f* f>i  ( va phase' sample )
+    dup libm:sin r> f* 0.2 f* 32000.0 f* f>i  ( va phase' sample )
     -rot                                   ( sample va phase' )
     dup TWO_PI f> [ TWO_PI f- ] [ ] ifte
     swap Voice.phase! drop                 ( sample )
@@ -179,19 +177,26 @@ struct: AudioStream
 
 :: audio-cb callback: pi:v audio-fill ;
 
-( --- Display helpers --- )
-: active-count ( -- n )
-  0 0
-  NUM_VOICES [
-    dup voice Voice.stage@ nip 0 > rot + swap
-    1+
-  ] dotimes drop
+( --- Display constants --- )
+:: KB_X 60 ;    :: KB_Y 290 ;
+:: KB_W 40 ;    :: KB_P 40 ;
+:: KB_H 130 ;   :: WAVE_Y 162 ;
+
+( --- Custom font --- )
+:: font-buf 48 alloc ;
+:: _tx 8 alloc ;  :: _ty 8 alloc ;
+:: _tfs 8 alloc ; :: _tc 8 alloc ;
+
+: text ( str x y fontSize color -- )
+  _tc !64 i>f _tfs !64 i>f _ty !64 i>f _tx !64
+  font-buf swap _tx @64 _ty @64 _tfs @64 0.0 _tc @64
+  raylib:DrawTextEx
 ;
 
+( --- Waveform display --- )
 :: wave-x 8 alloc ;
 :: wave-buf 128 4 * alloc ;
 
-( Compute waveform y-coordinates into wave-buf )
 : compute-waveform ( -- )
   0
   128 [
@@ -209,131 +214,70 @@ struct: AudioStream
       1+
     ] dotimes
     drop
-    85.0 f* f>i 162 swap -
+    85.0 f* f>i WAVE_Y swap -
     over 4 * wave-buf + !32
     1+
   ] dotimes
   drop
 ;
 
-( Draw connected line segments from wave-buf )
 : draw-wave-path ( -- )
   0
   127 [
     >r
-    r@ 5 * 50 +
+    r@ 680 * 127 / KB_X +
     r@ 4 * wave-buf + @32
-    r@ 1 + 5 * 50 +
+    r@ 1 + 680 * 127 / KB_X +
     r@ 1 + 4 * wave-buf + @32
-    GREEN raylib:DrawLine
+    AMBER raylib:DrawLine
     r> 1 +
   ] dotimes
   drop
 ;
 
 : draw-waveform ( -- )
-  50 162 690 162 LIGHTGRAY raylib:DrawLine
+  KB_X WAVE_Y 740 WAVE_Y FG raylib:DrawLine
   compute-waveform
   draw-wave-path
 ;
 
 ( --- Keyboard drawing --- )
-:: KB_X 60 ;   :: KB_Y 290 ;
-:: KB_W 64 ;   :: KB_P 68 ;    ( width + 4px gap )
-:: KB_H 130 ;
-:: BK_W 40 ;   :: BK_H 80 ;
-:: temp-x 8 alloc ;
+:: _kc 8 alloc ;
 
-( Draw 10 white key rectangles )
-: draw-white-keys
-  0
-  10 [
-    dup KB_P * KB_X +              ( i x )
-    over voice Voice.stage@ nip 0 >
-    [ GREEN ] [ LIGHTGRAY ] ifte
-    >r
-    dup KB_Y KB_W KB_H r> raylib:DrawRectangle
-    KB_Y KB_W KB_H DARKGRAY raylib:DrawRectangleLines
-    1+
-  ] dotimes
-  drop
-;
-
-( Black key positions: [voice-idx white-key-pos] )
-:: bk-pos [
-  [ 10 0 ]  [ 11 1 ]  [ 12 3 ]  [ 13 4 ]
-  [ 14 5 ]  [ 15 7 ]  [ 16 8 ]
+( Voice indices in chromatic order )
+:: kb-map [
+  [ 0 0 ]   [ 1 10 ]  [ 2 1 ]   [ 3 11 ]  [ 4 2 ]
+  [ 5 3 ]   [ 6 12 ]  [ 7 4 ]   [ 8 13 ]  [ 9 5 ]
+  [ 10 14 ] [ 11 6 ]  [ 12 7 ]  [ 13 15 ] [ 14 8 ]
+  [ 15 16 ] [ 16 9 ]
 ] ;
 
-: draw-one-bk ( [vidx wpos] -- )
-  do                                       ( vidx wpos )
-  KB_P * KB_X + KB_W + 2 + BK_W 2 / -     ( vidx bx )
-  swap voice Voice.stage@ nip 0 >
-  [ DARKBLUE ] [ DARKGRAY ] ifte
-  >r
-  dup KB_Y BK_W BK_H r> raylib:DrawRectangle
-  drop
+: amber-env ( env -- color )
+  dup 0.0 f> [
+    dup 255.0 f* f>i swap 176.0 f* f>i 0 255 rgba
+  ] [
+    drop BG
+  ] ifte
 ;
 
-: draw-black-keys  bk-pos \draw-one-bk each drop ;
-
-( White key labels: [position-idx note-name key-shortcut] )
-:: wk-labels [
-  [ 0 "C" "a" ]  [ 1 "D" "s" ]  [ 2 "E" "d" ]  [ 3 "F" "f" ]
-  [ 4 "G" "g" ]  [ 5 "A" "h" ]  [ 6 "B" "j" ]  [ 7 "C" "k" ]
-  [ 8 "D" "l" ]  [ 9 "E" ";" ]
-] ;
-
-: draw-wk-label ( [idx note keylbl] -- )
-  do                                       ( idx note keylbl )
-  rot KB_P * KB_X + 24 +                   ( note keylbl lx )
-  temp-x !64                               ( note keylbl )
-  temp-x @64 KB_Y 95 + 12 DARKGRAY raylib:DrawText
-  temp-x @64 KB_Y 15 + 16 DARKBLUE raylib:DrawText
+: draw-one-key ( [pos vidx] -- )
+  do
+  voice Voice.env@ nip
+  amber-env _kc !64
+  KB_P * KB_X +
+  dup KB_Y KB_W KB_H _kc @64 raylib:DrawRectangle
+  KB_Y KB_W KB_H FG raylib:DrawRectangleLines
 ;
 
-: draw-white-labels  wk-labels \draw-wk-label each drop ;
-
-( Black key labels: [white-key-pos key-shortcut] )
-:: bk-labels [
-  [ 0 "w" ]  [ 1 "e" ]  [ 3 "t" ]  [ 4 "y" ]
-  [ 5 "u" ]  [ 7 "o" ]  [ 8 "p" ]
-] ;
-
-: draw-bk-label ( [wpos keylbl] -- )
-  do                                       ( wpos keylbl )
-  swap KB_P * KB_X + KB_W + 2 + BK_W 2 / - 14 +
-  KB_Y 50 + 11 RAYWHITE raylib:DrawText
-;
-
-: draw-black-labels  bk-labels \draw-bk-label each drop ;
-
-( Octave display text )
-: oct-text
-  octave
-  dup 0 = [ drop "Oct 0" ] [
-  dup 1 = [ drop "Oct 1" ] [
-  dup 2 = [ drop "Oct 2" ] [
-  dup 3 = [ drop "Oct 3" ] [
-  dup 4 = [ drop "Oct 4" ] [
-  dup 5 = [ drop "Oct 5" ] [
-  dup 6 = [ drop "Oct 6" ] [
-  drop "Oct 7" ] ifte ] ifte ] ifte ] ifte ] ifte ] ifte ] ifte
-;
-
-: draw-keyboard
-  draw-white-keys
-  draw-black-keys
-  draw-white-labels
-  draw-black-labels
-  oct-text 345 432 20 DARKBLUE raylib:DrawText
-  "[Z] octave [X]" 300 455 14 DARKGRAY raylib:DrawText
-;
+: draw-keys  kb-map \draw-one-key each drop ;
 
 ( --- Main --- )
 800 500 "fy - Poly Synth" raylib:InitWindow
 60 raylib:SetTargetFPS
 raylib:InitAudioDevice
+
+font-buf "/System/Library/Fonts/SFNS.ttf" 64 0 0 raylib:LoadFontEx drop
+font-buf 12 + 1 raylib:SetTextureFilter
 
 MAX_SAMPLES_PER_UPDATE raylib:SetAudioStreamBufferSizeDefault
 AudioStream.alloc 44100 16 1 raylib:LoadAudioStream stream-cell !64
@@ -346,18 +290,10 @@ stream raylib:PlayAudioStream
   check-octave
 
   raylib:BeginDrawing
-    RAYWHITE raylib:ClearBackground
-    "fy - Polyphonic Synth" 50 15 30 DARKBLUE raylib:DrawText
-
+    BG raylib:ClearBackground
+    "organ.fy" KB_X 20 20 FG text
     draw-waveform
-    active-count 0 > [
-      "Playing" 650 15 20 GREEN raylib:DrawText
-    ] [
-      "Silent" 650 15 20 DARKGRAY raylib:DrawText
-    ] ifte
-
-    draw-keyboard
-    10 480 raylib:DrawFPS
+    draw-keys
   raylib:EndDrawing
 ;
 
@@ -366,5 +302,6 @@ running? [ drop frame running? ] repeat
 
 stream raylib:StopAudioStream
 stream raylib:UnloadAudioStream
+font-buf raylib:UnloadFont
 raylib:CloseAudioDevice
 raylib:CloseWindow

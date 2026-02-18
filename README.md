@@ -39,7 +39,7 @@ Join [#fy on concatenative Discord](https://discord.com/channels/115047295709374
 
 ## Building
 
-`fy` is written in Zig and targets aarch64 exclusively. You'll need a Zig compiler and a 64-bit ARM machine such as Apple Silicon or a Raspberry Pi.
+`fy` requires **macOS on Apple Silicon** (aarch64). The JIT uses `MAP_JIT` and `pthread_jit_write_protect_np` which are macOS-specific. You'll need a Zig compiler (0.13+).
 
 ```sh
 zig build
@@ -81,4 +81,5 @@ A VSCode extension with syntax highlighting is in [`editors/vscode/fy-lang/`](ed
 
 ## Features
 
-There is no plan.
+- If you make a mistake, fy simply crashes. No hand-holding, no "did you mean...?", no stack traces. Just silence and a nonzero exit code. This is a feature - the authentic 1970s mainframe experience, now on your $3000 laptop.
+- There is no plan.
