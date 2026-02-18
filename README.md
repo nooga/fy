@@ -10,28 +10,75 @@ Short for _funky yak_, _flying yacht_, or _funny yodeling_ depending on your moo
 
 Join [#fy on concatenative Discord](https://discord.com/channels/1150472957093744721/1166896397254131804).
 
+## Highlights
+
+- **~1.8MB static binary** — the entire compiler, JIT, assembler, REPL, and runtime
+- **JIT compiler in <4k LoC Zig** — compiles directly to ARM64 machine code at runtime
+- **No interpreter** — every word compiles to native instructions before execution
+- **Advanced FFI** — call macOS frameworks (AppKit, CoreAudio), raylib, libm, or any C library
+- **Compile-time macros** — run real fy code at compile time, emit machine code
+- **Structs** — define C-compatible memory layouts with auto-generated accessors
+- **Callbacks** — create C-callable function pointers with thread-safe private stacks
+
+## Quick Taste
+
+```forth
+: fib  dup 1 <= [ drop 1 ] [ dup 1- fib swap 2 - fib + ] ifte ;
+10 fib .   ( 89 )
+```
+
+```forth
+[1 2 3 4 5] [dup *] map 0 swap [+] reduce .   ( 55 )
+```
+
+```forth
+:: _lib "/usr/lib/libSystem.B.dylib" dl-open ;
+: strlen  _lib "strlen" dl-sym bind: s:i ;
+"hello" strlen .   ( 5 )
+```
+
 ## Building
 
-`fy` is written in Zig and targets aarch64 exclusively. You'll need a Zig compiler and a 64-bit ARM machine such as AppleSilicon or a Raspberry Pi.
-
-Build with:
+`fy` is written in Zig and targets aarch64 exclusively. You'll need a Zig compiler and a 64-bit ARM machine such as Apple Silicon or a Raspberry Pi.
 
 ```sh
 zig build
-```
-
-Run with:
-
-```sh
 ./zig-out/bin/fy
 ```
 
-Check `--help` for the latest news on available flags and arguments.
+Check `--help` for available flags and arguments.
+
+## Documentation
+
+Full language documentation is in [`docs/`](docs/README.md):
+
+- [Getting Started](docs/getting-started.md) — building, running, REPL
+- [Language Guide](docs/language-guide.md) — syntax, stack model, core concepts
+- [Builtins Reference](docs/builtins.md) — every built-in word documented
+- [FFI Guide](docs/ffi.md) — calling C libraries, structs, callbacks
+- [Macros](docs/macros.md) — compile-time metaprogramming
+- [Examples](docs/examples.md) — annotated walkthroughs
 
 ## Examples
 
-Examples can be found in `examples/`.
+Examples can be found in [`examples/`](examples/). Highlights:
+
+| Example                                                 | Description                       |
+| ------------------------------------------------------- | --------------------------------- |
+| [`fib.fy`](examples/fib.fy)                             | Fibonacci                         |
+| [`fact.fy`](examples/fact.fy)                           | Factorial                         |
+| [`tak.fy`](examples/tak.fy)                             | TAK benchmark with locals         |
+| [`sierp.fy`](examples/sierp.fy)                         | Sierpinski triangle PPM generator |
+| [`libm.fy`](examples/libm.fy)                           | Math functions via FFI            |
+| [`raylib_hello.fy`](examples/raylib_hello.fy)           | raylib window                     |
+| [`raylib_synth_poly.fy`](examples/raylib_synth_poly.fy) | Polyphonic synthesizer            |
+| [`glass.fy`](examples/glass.fy)                         | macOS Liquid Glass via ObjC FFI   |
+| [`macro.fy`](examples/macro.fy)                         | Compile-time macros               |
+
+## Editor Support
+
+A VSCode extension with syntax highlighting is in [`editors/vscode/fy-lang/`](editors/vscode/fy-lang/).
 
 ## Features
 
-[There is no plan.](https://github.com/SerenityOS/serenity/blob/master/Documentation/FAQ.md#will-serenityos-support-thing)
+There is no plan.

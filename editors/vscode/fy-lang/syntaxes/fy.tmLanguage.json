@@ -8,6 +8,7 @@
     { "include": "#string" },
     { "include": "#char-literal" },
     { "include": "#struct-definition" },
+    { "include": "#macro-definition" },
     { "include": "#constant-definition" },
     { "include": "#word-definition" },
     { "include": "#locals" },
@@ -15,6 +16,7 @@
     { "include": "#number-integer" },
     { "include": "#semicolon" },
     { "include": "#brackets" },
+    { "include": "#backslash-word" },
     { "include": "#directives" },
     { "include": "#flow-control" },
     { "include": "#operators" },
@@ -25,6 +27,7 @@
     { "include": "#io-words" },
     { "include": "#quote-ops" },
     { "include": "#type-check" },
+    { "include": "#macro-primitives" },
     { "include": "#rstack" },
     { "include": "#namespaced-call" }
   ],
@@ -78,6 +81,13 @@
           "match": "[^\\s;]+"
         }
       ]
+    },
+    "macro-definition": {
+      "match": "(macro:)\\s+([^\\s;]+)",
+      "captures": {
+        "1": { "name": "keyword.control.macro.fy" },
+        "2": { "name": "entity.name.function.macro.fy" }
+      }
     },
     "constant-definition": {
       "match": "(::)\\s+([^\\s;]+)",
@@ -134,6 +144,13 @@
         }
       ]
     },
+    "backslash-word": {
+      "match": "(\\\\)([^\\s;\\]]+)",
+      "captures": {
+        "1": { "name": "punctuation.definition.quote-shorthand.fy" },
+        "2": { "name": "entity.name.function.quoted.fy" }
+      }
+    },
     "directives": {
       "name": "keyword.other.directive.fy",
       "match": "(?<=\\s|^)(bind:|sig:|callback:|include|import)(?=\\s|$)"
@@ -156,7 +173,7 @@
     },
     "memory-ops": {
       "name": "support.function.memory.fy",
-      "match": "(?<=\\s|^)(alloc|free|!64|@64|!32|f!32|@32|!16|@16)(?=\\s|$|;|\\])"
+      "match": "(?<=\\s|^)(alloc|free|!64|@64|!32|f!32|@32|f@32|!16|@16)(?=\\s|$|;|\\])"
     },
     "ffi-words": {
       "name": "support.function.ffi.fy",
@@ -168,11 +185,15 @@
     },
     "quote-ops": {
       "name": "support.function.quote.fy",
-      "match": "(?<=\\s|^)(cat|qcat|qlen|qempty\\?|qhead|qtail|qpush|qnil|range|map|reduce|filter|each|curry|compose)(?=\\s|$|;|\\])"
+      "match": "(?<=\\s|^)(cat|qcat|qlen|qempty\\?|qhead|qtail|qpush|qnil|qnth-type|qnth|range|map|reduce|filter|each|curry|compose)(?=\\s|$|;|\\])"
     },
     "type-check": {
       "name": "support.function.typecheck.fy",
-      "match": "(?<=\\s|^)(int\\?|string\\?)(?=\\s|$|;|\\])"
+      "match": "(?<=\\s|^)(int\\?|string\\?|quote\\?|word\\?|word->str)(?=\\s|$|;|\\])"
+    },
+    "macro-primitives": {
+      "name": "support.function.macro.fy",
+      "match": "(?<=\\s|^)(emit-lit|emit-word|peek-quote|unpush)(?=\\s|$|;|\\])"
     },
     "rstack": {
       "name": "support.function.rstack.fy",
