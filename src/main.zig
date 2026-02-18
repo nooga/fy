@@ -2452,7 +2452,7 @@ const Fy = struct {
             }
 
             const n_args = args_part.len;
-            if (n_args > 7) return Error.OutOfMemory; // max 7 args
+            if (n_args > 12) return Error.OutOfMemory; // max 12 args (8 int + 8 float regs)
 
             // Count string args that need temporary C string conversion
             var temp_str_count: usize = 0;
@@ -2532,8 +2532,8 @@ const Fy = struct {
             // String args ('s'/'S') are now C string pointers — treat as 'p' (integer/pointer)
             var int_reg: u5 = 0;
             var float_reg: u5 = 0;
-            var target_regs: [7]u5 = undefined;
-            var is_float_arg: [7]bool = undefined;
+            var target_regs: [12]u5 = undefined;
+            var is_float_arg: [12]bool = undefined;
             for (args_part, 0..) |arg_type, idx| {
                 switch (arg_type) {
                     'i', '4', 'p', 's', 'S' => {
@@ -2553,7 +2553,7 @@ const Fy = struct {
             // Pop args in reverse order. Integer args go directly into target x
             // registers (safe because each gets a unique sequential xN).
             // Float args need a temp x reg for the fmov step.
-            var float_temps: [7]u5 = undefined;
+            var float_temps: [12]u5 = undefined;
             var next_temp: u5 = 9;
             var i: usize = n_args;
             while (i > 0) {
