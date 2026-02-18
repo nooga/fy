@@ -1,4 +1,4 @@
-( Polyphonic audio synthesizer - 10 voice callback-driven sine )
+( Polyphonic ADSR synthesizer - 10 voice callback-driven sine )
 import "libm"
 import "raylib"
 
@@ -16,26 +16,37 @@ import "raylib"
 :: SAMPLE_RATE 44100.0 ;
 :: NUM_VOICES 10 ;
 
-( --- Voice memory block --- )
-( Each voice: f64 phase [0], f64 freq [8], i32 active [16] = 24 bytes )
-:: VOICE_SIZE 24 ;
-:: voices NUM_VOICES VOICE_SIZE * alloc ;
+( --- ADSR parameters --- )
+:: ATTACK  0.003  ;   ( ~7ms to peak     )
+:: DECAY   0.0001 ;   ( ~136ms to sustain )
+:: SUSTAIN 0.4    ;   ( sustain level     )
+:: RELEASE 0.0001 ;   ( ~90ms to silence  )
 
-: voice     ( i -- addr )      VOICE_SIZE * voices + ;
-: v-phase@  ( addr -- f64 )    @64 ;
-: v-freq@   ( addr -- f64 )    8 + @64 ;
-: v-active@ ( addr -- i32 )    16 + @32 ;
-: v-phase!  ( f64 addr -- )    !64 ;
-: v-freq!   ( f64 addr -- )    8 + !64 ;
-: v-active! ( i32 addr -- )    16 + !32 ;
+( --- ADSR stages --- )
+:: IDLE 0 ;  :: ATK 1 ;  :: DEC 2 ;  :: SUS 3 ;  :: REL 4 ;
+
+( --- Voice struct --- )
+( Generates: Voice.size Voice.alloc Voice.new )
+( Per field: Voice.phase@ Voice.phase! etc )
+( Accessors are ptr-preserving: )
+(   Voice.field@ : ptr -- ptr value )
+(   Voice.field! : value ptr -- ptr )
+struct: Voice
+  f64 phase  f64 freq  f64 env  i32 stage
+;
+
+:: voices NUM_VOICES Voice.size * alloc ;
+: voice ( i -- addr ) Voice.size * voices + ;
 
 ( --- Initialize voices --- )
 : init-voices
   NUM_VOICES [
     dup voice
-    0.0 over v-phase!
-    440.0 over v-freq!
-    0 swap v-active!
+    0.0 swap Voice.phase!
+    440.0 swap Voice.freq!
+    0.0 swap Voice.env!
+    IDLE swap Voice.stage!
+    drop
     1+
   ] dotimes drop
 ;
@@ -49,6 +60,34 @@ struct: AudioStream
 :: stream-cell 8 alloc ;
 : stream stream-cell @64 ;
 
+( --- ADSR envelope --- )
+( Pattern: read env, adjust, clamp+transition if past threshold, write back )
+: env-attack ( va -- )
+  Voice.env@ ATTACK f+
+  dup 1.0 f> [ drop DEC swap Voice.stage! 1.0 ] [ ] ifte
+  swap Voice.env! drop
+;
+
+: env-decay ( va -- )
+  Voice.env@ DECAY f-
+  dup SUSTAIN f< [ drop SUS swap Voice.stage! SUSTAIN ] [ ] ifte
+  swap Voice.env! drop
+;
+
+: env-release ( va -- )
+  Voice.env@ RELEASE f-
+  dup 0.0 f< [ drop IDLE swap Voice.stage! 0.0 ] [ ] ifte
+  swap Voice.env! drop
+;
+
+: env-step ( va -- )
+  Voice.stage@
+  dup ATK = [ drop env-attack  ] [
+  dup DEC = [ drop env-decay   ] [
+  dup REL = [ drop env-release ] [
+  drop drop ] ifte ] ifte ] ifte
+;
+
 ( --- Keyboard input --- )
 :: key-data [
   [ 90 261.63 0 ]  ( Z = C4 )   [ 88 293.66 1 ]  ( X = D4 )
@@ -60,23 +99,31 @@ struct: AudioStream
 
 : check-one ( [key freq idx] -- )
   do voice rot raylib:IsKeyDown
-  [ tuck v-freq! 1 swap v-active! ]
-  [ nip 0 swap v-active! ]
-  ifte
+  [ ( freq va -- key down )
+    tuck Voice.freq! drop
+    Voice.stage@ dup IDLE = swap REL = or
+    [ ATK swap Voice.stage! drop ] [ drop ] ifte
+  ] [ ( freq va -- key up )
+    nip
+    Voice.stage@ dup 0 > swap 4 < &
+    [ REL swap Voice.stage! drop ] [ drop ] ifte
+  ] ifte
 ;
 
 : check-keys  key-data \check-one each drop ;
 
 ( --- Sample generation --- )
 : gen-voice-sample ( va -- sample )
-  dup v-active@ [
-    dup v-phase@                            ( va phase )
-    dup libm:sin 0.025 f* 32000.0 f* f>i    ( va phase sample )
-    swap rot dup                            ( sample phase va va )
-    v-freq@ TWO_PI f* SAMPLE_RATE f/        ( sample phase va incr )
-    rot f+                                  ( sample va phase' )
-    dup TWO_PI f> [ TWO_PI f- ] [ ] ifte    ( sample va phase' )
-    swap v-phase!                           ( sample )
+  Voice.stage@ 0 > [
+    dup env-step
+    Voice.env@ >r
+    Voice.phase@
+    over Voice.freq@ nip
+    TWO_PI f* SAMPLE_RATE f/ f+           ( va phase' )
+    dup libm:sin r> f* 0.025 f* 32000.0 f* f>i  ( va phase' sample )
+    -rot                                   ( sample va phase' )
+    dup TWO_PI f> [ TWO_PI f- ] [ ] ifte
+    swap Voice.phase! drop                 ( sample )
   ] [
     drop 0
   ] ifte
@@ -85,8 +132,8 @@ struct: AudioStream
 : mix-voices ( -- sample )
   0 0
   NUM_VOICES [
-    dup voice gen-voice-sample              ( acc i sample )
-    rot + swap                              ( acc' i )
+    dup voice gen-voice-sample
+    rot + swap
     1+
   ] dotimes
   drop
@@ -105,7 +152,7 @@ struct: AudioStream
 : active-count ( -- n )
   0 0
   NUM_VOICES [
-    dup voice v-active@ rot + swap
+    dup voice Voice.stage@ nip 0 > rot + swap
     1+
   ] dotimes drop
 ;
@@ -118,19 +165,20 @@ struct: AudioStream
     dup i>f wave-x !64
     0.0 0
     NUM_VOICES [
-      dup voice dup v-active@ [             ( acc j va )
-        v-freq@ wave-x @64 f*
+      dup voice Voice.stage@ 0 > [
+        Voice.env@ >r
+        Voice.freq@ nip wave-x @64 f*
         TWO_PI f* SAMPLE_RATE f/
-        libm:sin rot f+ swap               ( acc' j )
+        libm:sin r> f* rot f+ swap
       ] [
-        drop                                ( acc j )
+        drop
       ] ifte
       1+
     ] dotimes
-    drop                                    ( i acc )
-    120.0 f* f>i 280 swap -                 ( i y )
-    over 5 * 50 + swap                      ( i x y )
-    2.0 GREEN raylib:DrawCircle             ( i )
+    drop
+    120.0 f* f>i 280 swap -
+    over 5 * 50 + swap
+    2.0 GREEN raylib:DrawCircle
     1+
   ] dotimes
   drop
