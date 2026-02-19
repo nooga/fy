@@ -10,6 +10,7 @@ const posix_dl = @cImport({
 });
 const c_std = @cImport({
     @cInclude("stdlib.h");
+    @cInclude("stdio.h");
 });
 const Editor = @import("zigline").Editor;
 const Asm = @import("asm.zig");
@@ -56,6 +57,7 @@ const Fy = struct {
     fyalloc: std.mem.Allocator,
     userWords: std.StringHashMap(Word),
     importedFiles: std.StringHashMap(void),
+    file_ns_map: std.StringHashMap([]const u8), // abs file path -> namespace prefix for hot-patching
     data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
     data_stack_top: usize = 0, // x21/x22 init value = top of usable region
     macro_data_stack_mem: ?[*]align(std.mem.page_size) u8 = null,
@@ -65,6 +67,7 @@ const Fy = struct {
     image: Image,
     heap: Heap,
     struct_layouts: std.ArrayList(StructLayout),
+    hot_mutex: std.Thread.Mutex = .{},
 
     const version = "v0.0.1";
     const DATA_STACK_PAGES = 8; // 32KB usable = 4096 values
@@ -129,6 +132,7 @@ const Fy = struct {
         var fy = Fy{
             .userWords = std.StringHashMap(Word).init(allocator),
             .importedFiles = std.StringHashMap(void).init(allocator),
+            .file_ns_map = std.StringHashMap([]const u8).init(allocator),
             .fyalloc = allocator,
             .image = image,
             .heap = Heap.init(allocator),
@@ -150,6 +154,14 @@ const Fy = struct {
         }
         self.struct_layouts.deinit();
         deinitUserWords(self);
+        {
+            var it = self.file_ns_map.iterator();
+            while (it.next()) |entry| {
+                self.fyalloc.free(entry.key_ptr.*);
+                self.fyalloc.free(entry.value_ptr.*);
+            }
+            self.file_ns_map.deinit();
+        }
         self.deinitImportedFiles();
         self.deinitStacks();
         // Reset cached adapter pointers — they point into our (now-freed) image
@@ -571,6 +583,7 @@ const Fy = struct {
         callSlot0: ?*const anyopaque = null,
         callSlot3: ?*const anyopaque = null,
         image_addr: ?usize = null, // entry point in JIT image for BL-callable words
+        trampoline_addr: ?usize = null, // stable B-trampoline in image (for hot-patching)
         immediate: bool = false, // compile-time word (macro): execute instead of compile
 
         const DEFINE = ":";
@@ -2325,7 +2338,12 @@ const Fy = struct {
         }
 
         fn emitWord(self: *Compiler, word: Word) !void {
-            // User words compiled into image: emit BL relocation instead of inlining
+            // User words with trampoline: BL to trampoline (enables hot-patching)
+            if (word.trampoline_addr) |addr| {
+                try self.emitBL(addr);
+                return;
+            }
+            // User words compiled into image but without trampoline
             if (word.image_addr) |addr| {
                 try self.emitBL(addr);
                 return;
@@ -2997,6 +3015,14 @@ const Fy = struct {
             };
             const resolved = self.resolveFilePath(path) catch return Error.OutOfMemory;
             defer self.fy.fyalloc.free(resolved);
+
+            // Record file -> empty namespace mapping for hot-patching
+            if (self.fy.file_ns_map.get(resolved) == null) {
+                const map_key = self.fy.fyalloc.dupe(u8, resolved) catch return Error.OutOfMemory;
+                const map_val = self.fy.fyalloc.dupe(u8, "") catch return Error.OutOfMemory;
+                self.fy.file_ns_map.put(map_key, map_val) catch return Error.OutOfMemory;
+            }
+
             try self.compileFile(resolved, null);
         }
 
@@ -3038,6 +3064,14 @@ const Fy = struct {
 
             const resolved = self.resolveFilePath(file_path) catch return Error.OutOfMemory;
             defer self.fy.fyalloc.free(resolved);
+
+            // Record file -> namespace mapping for hot-patching
+            if (self.fy.file_ns_map.get(resolved) == null) {
+                const map_key = self.fy.fyalloc.dupe(u8, resolved) catch return Error.OutOfMemory;
+                const map_val = self.fy.fyalloc.dupe(u8, ns) catch return Error.OutOfMemory;
+                self.fy.file_ns_map.put(map_key, map_val) catch return Error.OutOfMemory;
+            }
+
             try self.compileFile(resolved, ns);
         }
 
@@ -3458,7 +3492,18 @@ const Fy = struct {
                         // Declare word AFTER successful compilation (fixes ghost word bug)
                         try self.declareWord(reg_name);
                         if (self.fy.userWords.getPtr(reg_name)) |word| {
-                            word.image_addr = entry_addr;
+                            if (word.trampoline_addr) |tramp| {
+                                // Redefinition: patch existing trampoline to jump to new body
+                                const ob: i64 = @as(i64, @intCast(entry_addr)) - @as(i64, @intCast(tramp));
+                                const ow: i26 = @intCast(@divExact(ob, 4));
+                                self.fy.image.patchInstruction(tramp, Asm.@"b offset"(ow));
+                                word.image_addr = entry_addr;
+                            } else {
+                                // First definition: create trampoline
+                                const tramp = self.fy.image.linkTrampoline(entry_addr);
+                                word.image_addr = entry_addr;
+                                word.trampoline_addr = tramp;
+                            }
                         }
                         // Free the prefixed name if we allocated one (declareWord dupes it)
                         if (final_name) |fn_| self.fy.fyalloc.free(fn_);
@@ -3771,18 +3816,51 @@ const Fy = struct {
             const new = self.end;
             self.end += len;
             if (darwin) {
-                // Ensure RW for write, then switch to RX for execute
+                // Set pages RWX so both write and execute are allowed process-wide.
+                // pthread_jit_write_protect_np controls per-thread W^X mode.
                 _ = darwin_c.pthread_jit_write_protect_np(0);
-                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE);
+                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
                 @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
                 _ = darwin_c.pthread_jit_write_protect_np(1);
-                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_EXEC);
             } else {
                 @memcpy(self.mem[new..self.end], std.mem.sliceAsBytes(code));
                 self.protect(true) catch @panic("failed to set image executable");
             }
             __clear_cache(@intFromPtr(self.mem.ptr), @intFromPtr(self.mem.ptr) + self.end);
             return self.mem[new..self.end];
+        }
+
+        /// Patch a single instruction at the given byte address in the image.
+        /// Handles W^X toggle and icache flush. The 4-byte aligned write is
+        /// atomic on ARM64 w.r.t. instruction fetch on other cores.
+        fn patchInstruction(self: *Image, addr: usize, instr: u32) void {
+            const offset = addr - @intFromPtr(self.mem.ptr);
+            std.debug.assert(offset + 4 <= self.end);
+            std.debug.assert(offset % 4 == 0);
+            if (darwin) {
+                _ = darwin_c.pthread_jit_write_protect_np(0);
+                _ = darwin_c.mprotect(self.mem.ptr, self.committed, darwin_c.PROT_READ | darwin_c.PROT_WRITE | darwin_c.PROT_EXEC);
+                const ptr: *u32 = @alignCast(@ptrCast(self.mem.ptr + offset));
+                ptr.* = instr;
+                _ = darwin_c.pthread_jit_write_protect_np(1);
+            } else {
+                self.protect(false) catch @panic("failed to set image writable for patch");
+                const ptr: *u32 = @alignCast(@ptrCast(self.mem.ptr + offset));
+                ptr.* = instr;
+                self.protect(true) catch @panic("failed to set image executable after patch");
+            }
+            __clear_cache(addr, addr + 4);
+        }
+
+        /// Allocate a 1-instruction B trampoline in the image targeting target_addr.
+        /// Returns the byte address of the trampoline slot.
+        fn linkTrampoline(self: *Image, target_addr: usize) usize {
+            const tramp_addr = @intFromPtr(self.mem.ptr) + self.end;
+            const offset_bytes: i64 = @as(i64, @intCast(target_addr)) - @as(i64, @intCast(tramp_addr));
+            const offset_words: i26 = @intCast(@divExact(offset_bytes, 4));
+            var tramp_code = [1]u32{Asm.@"b offset"(offset_words)};
+            _ = self.link(&tramp_code);
+            return tramp_addr;
         }
 
         fn reset(self: *Image) void {
@@ -4010,6 +4088,37 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
     }
     // Extract directory of the file for include/import resolution
     const base_dir = Fy.Compiler.dirName(path);
+
+    // Record main file -> empty namespace mapping for hot-patching
+    {
+        const abs_path = if (path.len > 0 and path[0] == '/')
+            allocator.dupe(u8, path) catch null
+        else blk: {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const cwd = std.fs.cwd().realpath(".", &buf) catch break :blk null;
+            const result2 = allocator.alloc(u8, cwd.len + 1 + path.len) catch break :blk null;
+            @memcpy(result2[0..cwd.len], cwd);
+            result2[cwd.len] = '/';
+            @memcpy(result2[cwd.len + 1 ..], path);
+            break :blk result2;
+        };
+        if (abs_path) |ap| {
+            if (fy.file_ns_map.get(ap) == null) {
+                const empty_ns = allocator.dupe(u8, "") catch {
+                    allocator.free(ap);
+                    return error.OutOfMemory;
+                };
+                fy.file_ns_map.put(ap, empty_ns) catch {
+                    allocator.free(ap);
+                    allocator.free(empty_ns);
+                    return error.OutOfMemory;
+                };
+            } else {
+                allocator.free(ap);
+            }
+        }
+    }
+
     const result = fy.runWithBaseDir(cleanSrc, base_dir);
     allocator.free(src);
     if (result) |_| {
@@ -4017,6 +4126,70 @@ pub fn runFile(allocator: std.mem.Allocator, fy: *Fy, path: []const u8) !void {
     } else |err| {
         std.debug.print("error: {}\n", .{err});
     }
+}
+
+/// Hot-patching server: accepts TCP connections with file path + FY source.
+/// Protocol: first line = absolute file path, remaining = FY source code.
+/// Response: "ok\n" or "error: ...\n".
+fn serve(fy: *Fy, server: *std.net.Server) void {
+    while (true) {
+        const conn = server.accept() catch continue;
+        handleConnection(fy, conn.stream);
+        conn.stream.close();
+    }
+}
+
+fn handleConnection(fy: *Fy, stream: std.net.Stream) void {
+    // Read all data (max 1MB)
+    var buf: [1024 * 1024]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = stream.read(buf[total..]) catch break;
+        if (n == 0) break;
+        total += n;
+    }
+    if (total == 0) {
+        _ = stream.write("error: empty request\n") catch {};
+        return;
+    }
+    const data = buf[0..total];
+
+    // Split on first newline: file_path \n code
+    const newline_pos = std.mem.indexOfScalar(u8, data, '\n') orelse {
+        _ = stream.write("error: no newline separator\n") catch {};
+        return;
+    };
+    const file_path = data[0..newline_pos];
+    const code = data[newline_pos + 1 ..];
+    if (code.len == 0) {
+        _ = stream.write("error: no code\n") catch {};
+        return;
+    }
+
+    // Look up namespace for this file
+    const namespace: ?[]const u8 = fy.file_ns_map.get(file_path);
+
+    // Compile under mutex
+    fy.hot_mutex.lock();
+    defer fy.hot_mutex.unlock();
+
+    Fy.Builtins.fyPtr = @intFromPtr(fy);
+    var parser = Fy.Parser.init(code);
+    var compiler = Fy.Compiler.init(fy, &parser);
+    compiler.namespace = namespace;
+    compiler.base_dir = Fy.Compiler.dirName(file_path);
+    defer compiler.deinit();
+
+    const compiled = compiler.compile(.None) catch |err| {
+        var err_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&err_buf, "error: {}\n", .{err}) catch "error: unknown\n";
+        _ = stream.write(msg) catch {};
+        return;
+    };
+    fy.fyalloc.free(compiled);
+
+    std.debug.print("hot-patch: ok ({s})\n", .{file_path});
+    _ = stream.write("ok\n") catch {};
 }
 
 pub fn dumpImage(fy: *Fy) !void {
@@ -4048,6 +4221,8 @@ pub fn main() !void {
         std.debug.print("  -r, --repl         Launch interactive REPL\n", .{});
         std.debug.print("  -i, --image        Dump executable memory image to fy.out\n", .{});
         std.debug.print("  -v, --version      Display version and exit\n", .{});
+        std.debug.print("  -s, --serve        Enable hot-patching server (writes .fy-port)\n", .{});
+        std.debug.print("  -p, --port <n>     Set hot-patch server port (default: auto)\n", .{});
         std.debug.print("  -h, --help         Display this help and exit\n", .{});
         return;
     }
@@ -4063,7 +4238,39 @@ pub fn main() !void {
 
     var fy = Fy.init(allocator);
     defer {
+        if (parsedArgs.serve) {
+            _ = c_std.remove(".fy-port");
+        }
         fy.deinit();
+    }
+
+    // Start hot-patching server if requested (bind + write port on main thread)
+    var hot_server: ?std.net.Server = null;
+    if (parsedArgs.serve) blk: {
+        const addr = std.net.Address.initIp4(.{ 127, 0, 0, 1 }, parsedArgs.port);
+        hot_server = addr.listen(.{ .reuse_address = true }) catch |err| {
+            std.debug.print("hot-patch: failed to bind: {}\n", .{err});
+            break :blk;
+        };
+        const port = hot_server.?.listen_address.getPort();
+        std.debug.print("hot-patch: listening on port {d}\n", .{port});
+
+        // Write .fy-port via C stdlib (avoids sandbox interception of Zig std.fs)
+        {
+            var pbuf: [16]u8 = undefined;
+            const port_str = std.fmt.bufPrint(&pbuf, "{d}\x00", .{port}) catch break :blk;
+            const f = c_std.fopen(".fy-port", "w");
+            if (f) |file| {
+                _ = c_std.fputs(@ptrCast(port_str.ptr), file);
+                _ = c_std.fclose(file);
+            } else {
+                std.debug.print("hot-patch: failed to write .fy-port\n", .{});
+            }
+        }
+
+        _ = std.Thread.spawn(.{}, serve, .{ &fy, &hot_server.? }) catch |err| {
+            std.debug.print("hot-patch: failed to spawn thread: {}\n", .{err});
+        };
     }
 
     if (parsedArgs.files > 0) {

@@ -9,6 +9,7 @@
 - [Builtins Reference](builtins.md) — every built-in word documented
 - [FFI Guide](ffi.md) — calling C libraries, structs, callbacks
 - [Macros](macros.md) — compile-time metaprogramming
+- [Editor Support](editor.md) — VSCode extension, live hot-patching
 - [Examples](examples.md) — annotated walkthroughs
 
 ## What Makes fy Interesting

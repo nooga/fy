@@ -74,11 +74,13 @@ The `#!` line is automatically stripped before compilation.
 | `-r`, `--repl` | Launch interactive REPL |
 | `-i`, `--image` | Dump JIT image to `fy.out` |
 | `-v`, `--version` | Print version |
+| `-s`, `--serve` | Start the hot-patching TCP listener |
+| `-p`, `--port <n>` | Set the listener port (default: OS-assigned) |
 | `-h`, `--help` | Show help |
 
 ## Editor Support
 
-A VSCode extension with syntax highlighting is available in `editors/vscode/fy-lang/`. See the [VSCode extension README](../editors/vscode/fy-lang/) for installation instructions.
+A VSCode extension with syntax highlighting and live hot-patching is available in `editors/vscode/fy-lang/`. See the [Editor Support](editor.md) page for installation and usage.
 
 ## Running Tests
 

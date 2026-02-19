@@ -57,6 +57,7 @@ Full language documentation is in [`docs/`](docs/README.md):
 - [Builtins Reference](docs/builtins.md) — every built-in word documented
 - [FFI Guide](docs/ffi.md) — calling C libraries, structs, callbacks
 - [Macros](docs/macros.md) — compile-time metaprogramming
+- [Editor Support](docs/editor.md) — VSCode extension, live hot-patching
 - [Examples](docs/examples.md) — annotated walkthroughs
 
 ## Examples
@@ -77,7 +78,7 @@ Examples can be found in [`examples/`](examples/). Highlights:
 
 ## Editor Support
 
-A VSCode extension with syntax highlighting is in [`editors/vscode/fy-lang/`](editors/vscode/fy-lang/).
+A VSCode extension with syntax highlighting and **live hot-patching** is in [`editors/vscode/fy-lang/`](editors/vscode/fy-lang/). Run your program with `fy --serve`, place your cursor on a word definition, hit **Cmd+Shift+Enter**, and the running program picks up the new code instantly — no restart needed. See the [Editor Support docs](docs/editor.md) for details.
 
 ## Features
 

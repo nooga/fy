@@ -40,6 +40,8 @@ struct: Camera3D
   Camera3D.new
 ;
 
+: color RED ;
+
 : frame
   cam update-camera drop
 
@@ -50,7 +52,7 @@ struct: Camera3D
       ( Draw solid cube )
       0.0 0.0 0.0  
       2.0 2.0 2.0  
-      RED 
+      color 
       raylib:DrawCube
       ( Draw wireframe )
       0.0 0.0 0.0  

@@ -1,12 +1,13 @@
 {
   "name": "fy-lang",
   "displayName": "fy",
-  "description": "Syntax highlighting for the fy programming language",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and hot-patching for the fy programming language",
+  "version": "0.2.0",
   "engines": {
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
+  "main": "./out/extension.js",
   "contributes": {
     "languages": [
       {
@@ -22,6 +23,29 @@
         "scopeName": "source.fy",
         "path": "./syntaxes/fy.tmLanguage.json"
       }
+    ],
+    "commands": [
+      {
+        "command": "fy.evalDefinition",
+        "title": "FY: Eval Definition at Cursor"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "fy.evalDefinition",
+        "key": "ctrl+shift+enter",
+        "mac": "cmd+shift+enter",
+        "when": "editorTextFocus && editorLangId == fy"
+      }
     ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^18.0.0",
+    "typescript": "^5.0.0"
   }
 }
