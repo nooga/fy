@@ -55,6 +55,7 @@ Flags are `1` (true) or `0` (false).
 | `tuck` | `a b -- b a b` | Copy top under second |
 | `rot` | `a b c -- b c a` | Rotate three upward |
 | `-rot` | `a b c -- c a b` | Rotate three downward |
+| `pick` | `xu..x0 u -- xu..x0 xu` | Copy nth stack item to top (0-indexed) |
 | `depth` | `-- n` | Current stack depth |
 
 ## Retain Stack
@@ -72,11 +73,55 @@ Flags are `1` (true) or `0` (false).
 | `do` | `... f --` | Execute quote/callable f |
 | `do?` | `pred f --` | Execute f only if pred is non-zero |
 | `ifte` | `cond ft ff --` | Execute ft if cond non-zero, else ff |
+| `then` | `flag [body] --` | Execute body if flag is non-zero |
+| `unless` | `flag [body] --` | Execute body if flag is zero |
+| `cond` | `value [pairs] -- result` | Multi-way conditional (see below) |
 | `dotimes` | `n f --` | Execute f n times |
-| `repeat` | `cond f --` | Loop: execute f while TOS non-zero |
+| `repeat` | `f --` | Loop: execute f while TOS non-zero |
 | `recur` | `--` | Tail-recursive jump to word start |
 | `dip` | `x f -- x` | Execute f, preserving x underneath |
-| `not` | `f -- !f` | Boolean negation |
+
+### `then` and `unless`
+
+Sugar for one-branch conditionals. `then` runs the body when the flag is truthy (non-zero), `unless` runs it when falsy (zero). The flag and quote are consumed.
+
+```fy
+5 1 [1+] then .    \ 6 — flag was truthy, body ran
+5 0 [1+] then .    \ 5 — flag was falsy, body skipped
+5 0 [1+] unless .  \ 6 — flag was falsy, body ran
+5 1 [1+] unless .  \ 5 — flag was truthy, body skipped
+```
+
+### `cond` — multi-way conditional
+
+Takes a value and a quote of condition/body pairs. Conditions are tested in order; the first truthy match runs its body.
+
+```fy
+value [ [cond1] [body1] [cond2] [body2] ... [default] ] cond
+```
+
+**Semantics:**
+- `cond` duplicates the value before each condition. The condition receives a copy and must return a flag.
+- On match: the value is dropped and the body executes (body does **not** receive the value).
+- An odd final quote (no condition before it) acts as a default.
+- The value is consumed by `cond`.
+
+```fy
+: heading-level
+  [ ["######" sstarts] [6]
+    ["#####" sstarts]  [5]
+    ["####" sstarts]   [4]
+    ["###" sstarts]    [3]
+    ["##" sstarts]     [2]
+    ["#" sstarts]      [1]
+    [0]
+  ] cond
+;
+
+"## Sub" heading-level .  \ 2
+
+3 [ [1 =] [10] [2 =] [20] [3 =] [30] [0] ] cond .  \ 30
+```
 
 ## Output
 
@@ -97,6 +142,17 @@ Flags are `1` (true) or `0` (false).
 |------|-------------|-------------|
 | `s+` | `a b -- a+b` | Concatenate two strings |
 | `slen` | `s -- n` | String length in bytes |
+| `ssub` | `s start len -- s'` | Substring extraction |
+| `sfind` | `s pattern -- index` | Find first occurrence (-1 if not found) |
+| `s=` | `a b -- flag` | String equality |
+| `sstarts` | `s prefix -- flag` | Does s start with prefix? |
+| `sends` | `s suffix -- flag` | Does s end with suffix? |
+| `sreplace` | `s old new -- s'` | Replace all occurrences |
+| `ssplit` | `s delim -- quote` | Split string into quote of parts |
+| `strim` | `s -- s'` | Trim leading/trailing whitespace |
+| `slines` | `s -- quote` | Split string on newlines |
+| `swrite` | `s --` | Write string to stdout (no newline) |
+| `i>s` | `n -- s` | Integer to string |
 
 ## Floats
 
@@ -160,6 +216,8 @@ Floats are f64 values stored as bitcast i64. Use `i>f` / `f>i` to convert.
 | `slurp` | `path -- string` | Read entire file as string |
 | `spit` | `string path -- 0` | Write string to file |
 | `readln` | `-- string` | Read line from stdin |
+| `dir-list` | `path -- quote` | List files in directory |
+| `mkdir-p` | `path -- 0` | Create directory (and parents) |
 
 ## Memory
 

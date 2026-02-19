@@ -102,6 +102,7 @@ const Fy = struct {
     }
 
     fn isStr(v: Value) bool {
+        if (v < 0) return false; // Negative values are always integers
         if ((v & TAG_MASK) != TAG_STR) return false;
         const raw: u64 = @bitCast(v);
         return (raw >> TAG_BITS) >= HEAP_BASE;
@@ -977,6 +978,51 @@ const Fy = struct {
             }
         }
 
+        // cond: auto-managed multi-way conditional
+        // value [ [cond1] [body1] [cond2] [body2] ... [default] ] cond
+        fn condImpl(cases: Value, value: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(cases)) @panic("cond expects quote");
+            if ((fy.heap.typeOf(cases) orelse Heap.ObjType.String) != .Quote) @panic("cond expects quote");
+            const q = fy.heap.getQuote(cases);
+            const items = q.items.items;
+            const adapt = getAdapt1(fy);
+
+            var i: usize = 0;
+            while (i + 1 < items.len) : (i += 2) {
+                // Get condition sub-quote
+                const cond_qv = itemToValue(fy, items[i]);
+                const cond_fptr_val = resolveCallable(cond_qv);
+                if (!isInt(cond_fptr_val)) @panic("cond: condition must be callable");
+                const cond_fptr: usize = @intCast(getInt(cond_fptr_val));
+
+                // Call condition with value as arg
+                const base: Value = @bitCast(@as(i64, @intCast(fy.tramp_stack_top)));
+                const flag = adapt(cond_fptr, base, base, value);
+
+                if (flag != 0) {
+                    // Match — call body
+                    const body_qv = itemToValue(fy, items[i + 1]);
+                    const body_fptr_val = resolveCallable(body_qv);
+                    if (!isInt(body_fptr_val)) @panic("cond: body must be callable");
+                    const body_fptr: usize = @intCast(getInt(body_fptr_val));
+                    return adapt(body_fptr, base, base, makeInt(0));
+                }
+            }
+
+            // Default case (odd final element)
+            if (items.len % 2 == 1) {
+                const default_qv = itemToValue(fy, items[items.len - 1]);
+                const default_fptr_val = resolveCallable(default_qv);
+                if (!isInt(default_fptr_val)) @panic("cond: default must be callable");
+                const default_fptr: usize = @intCast(getInt(default_fptr_val));
+                const base: Value = @bitCast(@as(i64, @intCast(fy.tramp_stack_top)));
+                return adapt(default_fptr, base, base, makeInt(0));
+            }
+
+            return makeInt(0); // No match, no default
+        }
+
         // Keep a pointer to the Fy instance for string operations
         var fyPtr: usize = 0;
         // Pointer to the active Compiler during macro expansion (0 when not in macro)
@@ -1243,6 +1289,247 @@ const Fy = struct {
             }
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             return fy.heap.length(a);
+        }
+
+        // Capture a local value into a quote: replaces word `name` with literal `val`
+        // Stack: ( quote name val -- quote' )
+        // fnToWord pops TOS→first param, so: first=val, second=name, third=quote
+        fn captureInQuote(captured_val: Value, name_val: Value, quote_val: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(name_val)) @panic("_cap: name must be string");
+            const name = fy.heap.getString(name_val);
+            return fy.replaceWordInQuote(quote_val, name, captured_val) catch @panic("_cap: replace failed");
+        }
+
+        // String equality (content comparison, not heap ID)
+        fn strEq(b: Value, a: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (isStr(a) and isStr(b)) {
+                const t_a = fy.heap.typeOf(a) orelse return makeInt(0);
+                const t_b = fy.heap.typeOf(b) orelse return makeInt(0);
+                if (t_a != .String or t_b != .String) return makeInt(0);
+                const sa = fy.heap.getString(a);
+                const sb = fy.heap.getString(b);
+                return makeInt(@as(i64, @intFromBool(std.mem.eql(u8, sa, sb))));
+            }
+            return makeInt(@as(i64, @intFromBool(a == b)));
+        }
+
+        // Byte at index (s n -- c), returns -1 if out of bounds
+        fn strNth(n: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s)) @panic("snth expects string");
+            const str = fy.heap.getString(s);
+            if (n < 0) return makeInt(-1);
+            const idx: usize = @intCast(@as(u64, @bitCast(n)));
+            if (idx >= str.len) return makeInt(-1);
+            return makeInt(@as(i64, str[idx]));
+        }
+
+        // Substring (s start len -- s')
+        fn strSub(len_v: Value, start_v: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s)) @panic("ssub expects string");
+            const str = fy.heap.getString(s);
+            if (start_v < 0) return fy.heap.storeString("") catch @panic("ssub: store failed");
+            const start: usize = @intCast(@as(u64, @bitCast(start_v)));
+            const len: usize = if (len_v < 0) 0 else @intCast(@as(u64, @bitCast(len_v)));
+            if (start >= str.len) return fy.heap.storeString("") catch @panic("ssub: store failed");
+            const end = @min(start + len, str.len);
+            return fy.heap.storeString(str[start..end]) catch @panic("ssub: store failed");
+        }
+
+        // Split string into lines (s -- quote)
+        fn strLines(s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s)) @panic("slines expects string");
+            const str = fy.heap.getString(s);
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var start: usize = 0;
+            for (str, 0..) |c, i| {
+                if (c == '\n') {
+                    const end = if (i > start and str[i - 1] == '\r') i - 1 else i;
+                    const buf = fy.fyalloc.dupe(u8, str[start..end]) catch @panic("oom");
+                    items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                    start = i + 1;
+                }
+            }
+            // last line (may not end with \n)
+            if (start <= str.len) {
+                const tail = str[start..];
+                const trimmed = if (tail.len > 0 and tail[tail.len - 1] == '\r') tail[0 .. tail.len - 1] else tail;
+                const buf = fy.fyalloc.dupe(u8, trimmed) catch @panic("oom");
+                items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+            }
+            return fy.heap.storeQuote(items) catch @panic("slines: store failed");
+        }
+
+        // Find substring (s needle -- idx), -1 if not found
+        fn strFind(needle: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s) or !isStr(needle)) return makeInt(-1);
+            const haystack = fy.heap.getString(s);
+            const ndl = fy.heap.getString(needle);
+            if (ndl.len == 0 or ndl.len > haystack.len) return makeInt(-1);
+            if (std.mem.indexOf(u8, haystack, ndl)) |idx| {
+                return makeInt(@as(i64, @intCast(idx)));
+            }
+            return makeInt(-1);
+        }
+
+        // Starts-with (s prefix -- flag)
+        fn strStarts(prefix: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s) or !isStr(prefix)) return makeInt(0);
+            const str = fy.heap.getString(s);
+            const pfx = fy.heap.getString(prefix);
+            if (pfx.len > str.len) return makeInt(0);
+            return makeInt(@as(i64, @intFromBool(std.mem.startsWith(u8, str, pfx))));
+        }
+
+        // Ends-with (s suffix -- flag)
+        fn strEnds(suffix: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s) or !isStr(suffix)) return makeInt(0);
+            const str = fy.heap.getString(s);
+            const sfx = fy.heap.getString(suffix);
+            if (sfx.len > str.len) return makeInt(0);
+            return makeInt(@as(i64, @intFromBool(std.mem.endsWith(u8, str, sfx))));
+        }
+
+        // Replace all occurrences (s old new -- s')
+        fn strReplace(new_v: Value, old_v: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s) or !isStr(old_v) or !isStr(new_v)) @panic("sreplace expects 3 strings");
+            const str = fy.heap.getString(s);
+            const old = fy.heap.getString(old_v);
+            const new = fy.heap.getString(new_v);
+            if (old.len == 0) return s;
+            // count occurrences
+            var count: usize = 0;
+            var pos: usize = 0;
+            while (pos + old.len <= str.len) {
+                if (std.mem.eql(u8, str[pos .. pos + old.len], old)) {
+                    count += 1;
+                    pos += old.len;
+                } else {
+                    pos += 1;
+                }
+            }
+            if (count == 0) return s;
+            const new_len = str.len - count * old.len + count * new.len;
+            const buf = fy.fyalloc.alloc(u8, new_len) catch @panic("oom");
+            var src: usize = 0;
+            var dst: usize = 0;
+            while (src + old.len <= str.len) {
+                if (std.mem.eql(u8, str[src .. src + old.len], old)) {
+                    @memcpy(buf[dst .. dst + new.len], new);
+                    dst += new.len;
+                    src += old.len;
+                } else {
+                    buf[dst] = str[src];
+                    dst += 1;
+                    src += 1;
+                }
+            }
+            while (src < str.len) {
+                buf[dst] = str[src];
+                dst += 1;
+                src += 1;
+            }
+            const v = fy.heap.storeString(buf[0..dst]) catch @panic("store failed");
+            fy.fyalloc.free(buf);
+            return v;
+        }
+
+        // Trim whitespace (s -- s')
+        fn strTrim(s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s)) @panic("strim expects string");
+            const str = fy.heap.getString(s);
+            const trimmed = std.mem.trim(u8, str, " \t\r\n");
+            return fy.heap.storeString(trimmed) catch @panic("strim: store failed");
+        }
+
+        // Split by delimiter (s delim -- quote)
+        fn strSplit(delim: Value, s: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(s) or !isStr(delim)) @panic("ssplit expects 2 strings");
+            const str = fy.heap.getString(s);
+            const d = fy.heap.getString(delim);
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            if (d.len == 0) {
+                // split into individual bytes
+                for (str) |c| {
+                    const b = fy.fyalloc.alloc(u8, 1) catch @panic("oom");
+                    b[0] = c;
+                    items.append(Heap.Item{ .String = b }) catch @panic("oom");
+                }
+            } else {
+                var start: usize = 0;
+                while (start <= str.len) {
+                    if (std.mem.indexOf(u8, str[start..], d)) |rel_idx| {
+                        const seg_end = start + rel_idx;
+                        const buf = fy.fyalloc.dupe(u8, str[start..seg_end]) catch @panic("oom");
+                        items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                        start = seg_end + d.len;
+                    } else {
+                        const buf = fy.fyalloc.dupe(u8, str[start..]) catch @panic("oom");
+                        items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                        break;
+                    }
+                }
+            }
+            return fy.heap.storeQuote(items) catch @panic("ssplit: store failed");
+        }
+
+        // Integer to string (n -- s)
+        fn intToStr(n: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            var buf: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch @panic("i>s: format failed");
+            return fy.heap.storeString(s) catch @panic("i>s: store failed");
+        }
+
+        // Print string raw, no quotes or newline (s --)
+        fn strWrite(a: Value) void {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (isStr(a)) {
+                if (fy.heap.typeOf(a)) |t| switch (t) {
+                    .String => {
+                        const s = fy.heap.getString(a);
+                        outPrint("{s}", .{s});
+                        return;
+                    },
+                    .Quote => {},
+                } else {}
+            }
+            outPrint("{d}", .{a});
+        }
+
+        // List directory entries (path -- quote)
+        fn dirList(path: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(path)) @panic("dir-list expects string path");
+            const p = fy.heap.getString(path);
+            var dir = std.fs.cwd().openDir(p, .{ .iterate = true }) catch @panic("dir-list: open failed");
+            defer dir.close();
+            var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
+            var iter = dir.iterate();
+            while (iter.next() catch @panic("dir-list: iterate failed")) |entry| {
+                const name = fy.fyalloc.dupe(u8, entry.name) catch @panic("oom");
+                items.append(Heap.Item{ .String = name }) catch @panic("oom");
+            }
+            return fy.heap.storeQuote(items) catch @panic("dir-list: store failed");
+        }
+
+        // Create directory recursively (path -- 0)
+        fn mkdirP(path: Value) Value {
+            const fy = @as(*Fy, @ptrFromInt(fyPtr));
+            if (!isStr(path)) @panic("mkdir-p expects string path");
+            const p = fy.heap.getString(path);
+            std.fs.cwd().makePath(p) catch @panic("mkdir-p failed");
+            return makeInt(0);
         }
 
         // Type checking
@@ -1714,6 +2001,8 @@ const Fy = struct {
         .{ "nip", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0" }, 2, 1) },
         // a b -- b a b
         .{ "tuck", inlineWord(&[_]u32{ Asm.@".pop x0, x1", Asm.@".push x0, x1", Asm.@".push x0" }, 2, 3) },
+        // xu ... x1 x0 u -- xu ... x1 x0 xu
+        .{ "pick", inlineWord(&[_]u32{ Asm.@".pop x0", Asm.@"ldr x0, [x21, x0, lsl #3]", Asm.@".push x0" }, 1, 1) },
         // a b c -- b c a
         .{
             "rot", inlineWord(&[_]u32{
@@ -1811,6 +2100,24 @@ const Fy = struct {
             Asm.CALLSLOT,
             Asm.@"blr Xn"(0),
         }, .c = 0, .p = 1, .callSlot0 = &Builtins.resolveCallable } },
+        // flag [body] -- ... run body if flag is truthy
+        .{ "then", .{ .code = &[_]u32{
+            Asm.@".pop x0", // pop body quote
+            Asm.CALLSLOT, // resolve to code pointer
+            Asm.@".pop x1", // pop condition
+            Asm.@"cbz Xn, offset"(1, 2), // if 0, skip blr
+            Asm.@"blr Xn"(0), // call body
+        }, .c = 2, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        // flag [body] -- ... run body if flag is falsy
+        .{ "unless", .{ .code = &[_]u32{
+            Asm.@".pop x0", // pop body quote
+            Asm.CALLSLOT, // resolve to code pointer
+            Asm.@".pop x1", // pop condition
+            Asm.@"cbnz Xn, offset"(1, 2), // if non-zero, skip blr
+            Asm.@"blr Xn"(0), // call body
+        }, .c = 2, .p = 0, .callSlot0 = &Builtins.resolveCallable } },
+        // value [pairs] -- result  multi-way conditional
+        .{ "cond", fnToWord(Builtins.condImpl) },
         // ... n f -- ...
         .{
             "dotimes", .{
@@ -1864,8 +2171,23 @@ const Fy = struct {
         // recur --
         .{ "recur", inlineWord(&[_]u32{Asm.RECUR}, 0, 0) },
         // String operations
+        .{ "_cap", fnToWord(Builtins.captureInQuote) }, // internal: capture local into quote
         .{ "s.", fnToWord(Builtins.print) }, // Print string or number
         .{ "s+", fnToWord(Builtins.strConcat) }, // Concatenate strings
+        .{ "s=", fnToWord(Builtins.strEq) }, // String equality
+        .{ "snth", fnToWord(Builtins.strNth) }, // (s n -- c) byte at index
+        .{ "ssub", fnToWord(Builtins.strSub) }, // (s start len -- s') substring
+        .{ "slines", fnToWord(Builtins.strLines) }, // (s -- quote) split into lines
+        .{ "sfind", fnToWord(Builtins.strFind) }, // (s needle -- idx) find substring
+        .{ "sstarts", fnToWord(Builtins.strStarts) }, // (s prefix -- flag)
+        .{ "sends", fnToWord(Builtins.strEnds) }, // (s suffix -- flag)
+        .{ "sreplace", fnToWord(Builtins.strReplace) }, // (s old new -- s') replace all
+        .{ "strim", fnToWord(Builtins.strTrim) }, // (s -- s') trim whitespace
+        .{ "ssplit", fnToWord(Builtins.strSplit) }, // (s delim -- quote) split by delim
+        .{ "i>s", fnToWord(Builtins.intToStr) }, // (n -- s) int to string
+        .{ "swrite", fnToWord(Builtins.strWrite) }, // (s --) print raw
+        .{ "dir-list", fnToWord(Builtins.dirList) }, // (path -- quote) list directory
+        .{ "mkdir-p", fnToWord(Builtins.mkdirP) }, // (path -- 0) create directory
         // Quote operations
         .{ "cat", fnToWord(Builtins.quoteConcat) }, // Concatenate two quotes
         .{ "qcat", fnToWord(Builtins.quoteConcat) }, // Alias for clarity
@@ -3661,6 +3983,106 @@ const Fy = struct {
                             }
                             self.resetQuoteTracking();
                         }
+                        // Peephole: [body] then → conditional skip
+                        if (std.mem.eql(u8, w, "then")) {
+                            if (self.lastQuote) |qv| {
+                                if (self.canInlineQuote(qv)) {
+                                    self.code.shrinkRetainingCapacity(self.lastQuoteCodePos);
+                                    try self.emit(Asm.@".pop x0"); // pop condition
+                                    const cbz_pos = self.code.items.len;
+                                    try self.emit(0); // placeholder for cbz
+                                    try self.emitQuoteBodyInline(qv);
+                                    const skip_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(cbz_pos)));
+                                    self.code.items[cbz_pos] = Asm.@"cbz Xn, offset"(0, @intCast(skip_off));
+                                    self.resetQuoteTracking();
+                                    continue;
+                                }
+                            }
+                            self.resetQuoteTracking();
+                        }
+                        // Peephole: [body] unless → conditional skip (inverted)
+                        if (std.mem.eql(u8, w, "unless")) {
+                            if (self.lastQuote) |qv| {
+                                if (self.canInlineQuote(qv)) {
+                                    self.code.shrinkRetainingCapacity(self.lastQuoteCodePos);
+                                    try self.emit(Asm.@".pop x0"); // pop condition
+                                    const cbnz_pos = self.code.items.len;
+                                    try self.emit(0); // placeholder for cbnz
+                                    try self.emitQuoteBodyInline(qv);
+                                    const skip_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(cbnz_pos)));
+                                    self.code.items[cbnz_pos] = Asm.@"cbnz Xn, offset"(0, @intCast(skip_off));
+                                    self.resetQuoteTracking();
+                                    continue;
+                                }
+                            }
+                            self.resetQuoteTracking();
+                        }
+                        // Peephole: [ [c1] [b1] [c2] [b2] ... [default] ] cond → chained branches
+                        if (std.mem.eql(u8, w, "cond")) {
+                            if (self.lastQuote) |outer_qv| cond_opt: {
+                                const outer_q = self.fy.heap.getQuote(outer_qv);
+                                const outer_items = outer_q.items.items;
+                                if (outer_items.len == 0) break :cond_opt;
+                                // Verify all items are sub-quotes and all are inlineable
+                                for (outer_items) |it| {
+                                    switch (it) {
+                                        .Quote => |sub_qv| {
+                                            if (!self.canInlineQuote(sub_qv)) break :cond_opt;
+                                        },
+                                        else => break :cond_opt,
+                                    }
+                                }
+                                // All checks passed — emit optimized cond
+                                self.code.shrinkRetainingCapacity(self.lastQuoteCodePos);
+                                // Track forward branches to end (for patching)
+                                var b_end_positions: [64]usize = undefined;
+                                var b_end_count: usize = 0;
+
+                                var ci: usize = 0;
+                                while (ci + 1 < outer_items.len) : (ci += 2) {
+                                    const cond_qv = outer_items[ci].Quote;
+                                    const body_qv = outer_items[ci + 1].Quote;
+                                    // dup VALUE for condition
+                                    try self.emit(Asm.@".pop x0");
+                                    try self.emit(Asm.@".push x0");
+                                    try self.emit(Asm.@".push x0");
+                                    // Inline condition (consumes dup'd value, leaves flag)
+                                    try self.emitQuoteBodyInline(cond_qv);
+                                    // Pop flag, branch if zero to next pair
+                                    try self.emit(Asm.@".pop x0");
+                                    const cbz_pos = self.code.items.len;
+                                    try self.emit(0); // placeholder cbz
+                                    // Drop VALUE (matched)
+                                    try self.emit(Asm.@".pop x0");
+                                    // Inline body
+                                    try self.emitQuoteBodyInline(body_qv);
+                                    // Branch to end
+                                    if (b_end_count < 64) {
+                                        b_end_positions[b_end_count] = self.code.items.len;
+                                        b_end_count += 1;
+                                    }
+                                    try self.emit(0); // placeholder b
+                                    // Patch cbz to here (next pair)
+                                    const next_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(cbz_pos)));
+                                    self.code.items[cbz_pos] = Asm.@"cbz Xn, offset"(0, @intCast(next_off));
+                                }
+                                // Default case (odd final element)
+                                if (outer_items.len % 2 == 1) {
+                                    const default_qv = outer_items[outer_items.len - 1].Quote;
+                                    // Drop VALUE
+                                    try self.emit(Asm.@".pop x0");
+                                    try self.emitQuoteBodyInline(default_qv);
+                                }
+                                // Patch all b-to-end
+                                for (b_end_positions[0..b_end_count]) |b_pos| {
+                                    const end_off: i26 = @intCast(@as(isize, @intCast(self.code.items.len)) - @as(isize, @intCast(b_pos)));
+                                    self.code.items[b_pos] = Asm.@"b offset"(end_off);
+                                }
+                                self.resetQuoteTracking();
+                                continue;
+                            }
+                            self.resetQuoteTracking();
+                        }
                         if (std.mem.eql(u8, w, "bind:") or std.mem.eql(u8, w, "sig:")) {
                             self.resetQuoteTracking();
                             try self.compileBind();
@@ -3881,13 +4303,113 @@ const Fy = struct {
         return Fn{ .call = fun };
     }
 
+    /// Recursively collect word names referenced in a quote (excluding its own locals).
+    fn collectQuoteWordRefs(self: *Fy, q: *Heap.QuoteObj, out: *std.ArrayList([]const u8)) void {
+        for (q.items.items) |it| switch (it) {
+            .Word => |w| {
+                // Skip if it's one of this quote's own locals
+                var is_own_local = false;
+                for (q.locals_names.items) |ln| {
+                    if (std.mem.eql(u8, ln, w)) {
+                        is_own_local = true;
+                        break;
+                    }
+                }
+                if (!is_own_local) {
+                    // Skip if already collected
+                    var already = false;
+                    for (out.items) |existing| {
+                        if (std.mem.eql(u8, existing, w)) {
+                            already = true;
+                            break;
+                        }
+                    }
+                    if (!already) {
+                        out.append(w) catch {};
+                    }
+                }
+            },
+            .Quote => |qv| {
+                if (self.heap.typeOf(qv)) |t| switch (t) {
+                    .Quote => {
+                        const nested_q = self.heap.getQuote(qv);
+                        self.collectQuoteWordRefs(nested_q, out);
+                    },
+                    else => {},
+                } else {}
+            },
+            else => {},
+        };
+    }
+
+    /// Replace all occurrences of a word name in a quote with a literal value.
+    /// Recurses into nested sub-quotes. Respects shadowing (stops if inner quote
+    /// declares the same name as its own local).
+    fn replaceWordInQuote(self: *Fy, qv: Value, name: []const u8, val: Value) !Value {
+        const q = self.heap.getQuote(qv);
+        // If this quote declares the name as its own local, it shadows — no replacement
+        for (q.locals_names.items) |ln| {
+            if (std.mem.eql(u8, ln, name)) return qv;
+        }
+        var changed = false;
+        var new_items = std.ArrayList(Heap.Item).init(self.fyalloc);
+        for (q.items.items) |item| switch (item) {
+            .Word => |w| {
+                if (std.mem.eql(u8, w, name)) {
+                    try new_items.append(Heap.Item{ .Number = val });
+                    changed = true;
+                } else {
+                    const dw = try self.fyalloc.dupe(u8, w);
+                    try new_items.append(Heap.Item{ .Word = dw });
+                }
+            },
+            .Quote => |inner_qv| {
+                const new_inner = try self.replaceWordInQuote(inner_qv, name, val);
+                try new_items.append(Heap.Item{ .Quote = new_inner });
+                if (new_inner != inner_qv) changed = true;
+            },
+            .String => |s| {
+                const ds = try self.fyalloc.dupe(u8, s);
+                try new_items.append(Heap.Item{ .String = ds });
+            },
+            .Number => |n| try new_items.append(Heap.Item{ .Number = n }),
+            .Float => |f| try new_items.append(Heap.Item{ .Float = f }),
+        };
+        if (!changed) {
+            // No replacements needed — free the cloned items and return original
+            for (new_items.items) |item| switch (item) {
+                .Word => |w| self.fyalloc.free(w),
+                .String => |s| self.fyalloc.free(s),
+                else => {},
+            };
+            new_items.deinit();
+            return qv;
+        }
+        // Clone locals_names
+        var new_locals = std.ArrayList([]u8).init(self.fyalloc);
+        for (q.locals_names.items) |ln| {
+            try new_locals.append(try self.fyalloc.dupe(u8, ln));
+        }
+        const new_qv = try self.heap.storeQuote(new_items);
+        self.heap.addRoot(Fy.getStrId(new_qv));
+        const new_qobj = self.heap.getQuote(new_qv);
+        new_qobj.locals_names = new_locals;
+        return new_qv;
+    }
+
     fn compileQuote(self: *Fy, q: *Heap.QuoteObj) ![]u32 {
         var dummy = Parser.init("");
         var c = Compiler.init(self, &dummy);
         defer c.deinit();
+        // Cache the quote's data into local variables. The `q` pointer points into
+        // the heap's entries array, which may be reallocated by storeString/storeQuote
+        // calls during compilation. The ArrayList buffers themselves are separate
+        // allocations that survive entries reallocation.
+        const locals_names = q.locals_names.items;
+        const items = q.items.items;
         // Quotes share the data stack with their caller — only save LR/FP, not x21/x22
         try c.enterPersist();
-        const locals_len: usize = q.locals_names.items.len;
+        const locals_len: usize = locals_names.len;
         var frame_size: usize = 0;
         if (locals_len > 0) {
             frame_size = locals_len * @sizeOf(Value);
@@ -3901,7 +4423,7 @@ const Fy = struct {
                 try c.emit(Asm.str_sp_x0(off));
             }
         }
-        for (q.items.items) |it| switch (it) {
+        for (items) |it| switch (it) {
             .Number => |n| {
                 try c.emitNumber(@as(u64, @bitCast(makeInt(n))), 0);
                 try c.emitPush();
@@ -3913,8 +4435,8 @@ const Fy = struct {
             .Word => |w| {
                 var is_local = false;
                 var li: usize = 0;
-                while (li < q.locals_names.items.len) : (li += 1) {
-                    if (std.mem.eql(u8, q.locals_names.items[li], w)) {
+                while (li < locals_names.len) : (li += 1) {
+                    if (std.mem.eql(u8, locals_names[li], w)) {
                         is_local = true;
                         break;
                     }
@@ -3948,6 +4470,59 @@ const Fy = struct {
                 try c.emitPush();
             },
             .Quote => |qv| {
+                if (locals_len > 0) capture_blk: {
+                    // Check if the nested quote references any of our locals
+                    const t = self.heap.typeOf(qv) orelse break :capture_blk;
+                    if (t != .Quote) break :capture_blk;
+                    const nested_q = self.heap.getQuote(qv);
+                    var refs = std.ArrayList([]const u8).init(self.fyalloc);
+                    defer refs.deinit();
+                    self.collectQuoteWordRefs(nested_q, &refs);
+
+                    // Collect captures: (local_index, local_name) pairs
+                    const CapInfo = struct { idx: usize, name: []const u8 };
+                    var captures = std.ArrayList(CapInfo).init(self.fyalloc);
+                    defer captures.deinit();
+                    for (refs.items) |ref_w| {
+                        for (locals_names, 0..) |ln, idx| {
+                            if (std.mem.eql(u8, ln, ref_w)) {
+                                captures.append(.{ .idx = idx, .name = ln }) catch {};
+                                break;
+                            }
+                        }
+                    }
+                    if (captures.items.len == 0) break :capture_blk;
+
+                    // Emit: push captured_value, push name_string, push quote, call _cap
+                    // Chain for each capture: each _cap replaces one word and returns new quote
+                    const cap_word = self.findWord("_cap") orelse @panic("_cap builtin not found");
+
+                    // First: push the original quote
+                    c.trackQuote(qv);
+                    try c.emitNumber(@as(u64, @bitCast(qv)), 0);
+                    try c.emitPush();
+
+                    for (captures.items) |cap| {
+                        // Stack: ... quote
+                        // Push name string
+                        const name_v = try self.heap.storeString(cap.name);
+                        self.heap.addRoot(Fy.getStrId(name_v));
+                        try c.emitNumber(@as(u64, @bitCast(name_v)), 0);
+                        try c.emitPush();
+                        // Stack: ... quote name
+                        // Load captured value from frame
+                        const off: u32 = @intCast(cap.idx * @sizeOf(Value));
+                        try c.emit(Asm.ldr_sp_x0(off));
+                        try c.emitPush();
+                        // Stack: ... quote name value
+                        // Call _cap: (value name quote -- quote')
+                        // _cap pops: value(TOS) name quote, pushes quote'
+                        c.resetQuoteTracking();
+                        try c.emitWord(cap_word);
+                    }
+                    // Stack: ... captured_quote
+                    continue;
+                }
                 c.trackQuote(qv);
                 try c.emitNumber(@as(u64, @bitCast(qv)), 0);
                 try c.emitPush();

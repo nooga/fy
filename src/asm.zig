@@ -112,6 +112,9 @@ pub const @".pop x0" = @"ldr x0, [x21], #8"; //@"ldr x0, [sp], #16";
 pub const @".pop x1" = @"ldr x1, [x21], #8"; //@"ldr x1, [sp], #16";
 pub const @".pop x2" = 0xf84086a2; // ldr x2, [x21], #8
 
+// LDR X0, [X21, X0, LSL #3] — load 64-bit value at data-stack base + index*8
+pub const @"ldr x0, [x21, x0, lsl #3]" = 0xF8607AA0;
+
 pub const @".push x0, x1" = @"stp x1, x0, [x21, #-16]!";
 pub const @".pop x0, x1" = @"ldp x0, x1, [x21], #16";
 pub const @".push x1, x0" = @"stp x0, x1, [x21, #-16]!";
