@@ -9,3 +9,4 @@ yy
 .DS_Store
 AGENTS.md
 .fy-port
+build/*

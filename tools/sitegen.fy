@@ -1,42 +1,6 @@
 ( sitegen.fy — static site generator for fy docs )
-( Converts docs/*.md to _site/*.html )
+( Architecture: parse markdown → executable quote → do → HTML )
 ( Usage: fy tools/sitegen.fy )
-
-( === Configuration === )
-:: src-dir "docs" ;
-:: out-dir "_site" ;
-
-( === CSS === )
-:: css "
-*{box-sizing:border-box}
-body{max-width:860px;margin:0 auto;padding:2em;font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a2e;background:#fafafa}
-nav{margin-bottom:2em;padding:1em;background:#fff;border-radius:8px;border:1px solid #e0e0e0}
-nav a{color:#3a5a9f;text-decoration:none;margin-right:1em}
-nav a:hover{text-decoration:underline}
-nav a.active{font-weight:bold;color:#1a1a2e}
-main{background:#fff;padding:2em;border-radius:8px;border:1px solid #e0e0e0}
-h1,h2,h3,h4,h5,h6{color:#1a1a2e;margin-top:1.5em;margin-bottom:0.5em}
-h1{border-bottom:2px solid #e0e0e0;padding-bottom:0.3em}
-code{background:#f0f0f0;padding:0.15em 0.4em;border-radius:3px;font-size:0.9em}
-pre{background:#1a1a2e;color:#e0e0e0;padding:1em;border-radius:8px;overflow-x:auto;line-height:1.4}
-pre code{background:none;padding:0;color:inherit}
-table{border-collapse:collapse;width:100%;margin:1em 0}
-th,td{border:1px solid #e0e0e0;padding:0.5em 0.8em;text-align:left}
-th{background:#f0f0f0;font-weight:600}
-tr:nth-child(even){background:#f9f9f9}
-a{color:#3a5a9f}
-ul,ol{padding-left:1.5em}
-li{margin:0.3em 0}
-hr{border:none;border-top:2px solid #e0e0e0;margin:2em 0}
-" ;
-
-( === HTML template === )
-: template [ | title content nav |
-  "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>"
-  title s+ " - fy</title>\n<style>" s+ css s+ "</style>\n</head>\n<body>\n<nav>" s+
-  nav s+ "</nav>\n<main>\n" s+
-  content s+ "\n</main>\n</body>\n</html>\n" s+
-] do ;
 
 ( === HTML escaping === )
 : html-esc
@@ -45,289 +9,396 @@ hr{border:none;border-top:2px solid #e0e0e0;margin:2em 0}
   ">" "&gt;" sreplace
 ;
 
-( === Inline formatting === )
-( All inline processors: s -- s' )
-( They use stack-based iteration with [cond] [body] repeat )
+( === Emission words === )
 
-( Process backtick code spans: `code` -> <code>code</code> )
-: code-span
-  "" swap ( acc rest )
-  [ dup "`" sfind dup 0 < not ] [
-    ( acc rest pos )
-    over 0 2 pick ssub     ( acc rest pos prefix )
-    3 pick swap s+         ( acc rest pos newacc )
-    rot drop swap          ( newacc rest pos )
-    1 + over slen over - ssub ( newacc after-tick )
-    dup "`" sfind
-    dup 0 < [
-      ( no closing tick: put back and stop )
-      drop "`" swap s+
-    ] [
-      ( newacc after pos2 )
-      over 0 2 pick ssub   ( newacc after pos2 code-content )
-      "<code>" swap s+ "</code>" s+
-      3 pick swap s+       ( newacc after pos2 newacc2 )
-      rot drop swap        ( newacc2 after pos2 )
-      1 + over slen over - ssub ( newacc2 rest )
-    ] ifte
-  ] repeat
-  s+
-;
-
-( Process **bold** -> <strong>bold</strong> )
-: bold-span
-  "" swap ( acc rest )
-  [ dup "**" sfind dup 0 < not ] [
-    ( acc rest pos )
-    over 0 2 pick ssub
-    3 pick swap s+ rot drop swap
-    2 + over slen over - ssub ( newacc after-open-** )
-    dup "**" sfind
-    dup 0 < [
-      drop "**" swap s+
-    ] [
-      over 0 2 pick ssub
-      "<strong>" swap s+ "</strong>" s+
-      3 pick swap s+ rot drop swap
-      2 + over slen over - ssub
-    ] ifte
-  ] repeat
-  s+
-;
-
-( Process [text](url) links )
-: link-span
-  "" swap ( acc rest )
-  [ dup "[" sfind dup 0 < not ] [
-    ( acc rest pos )
-    over 0 2 pick ssub
-    3 pick swap s+ rot drop swap
-    1 + over slen over - ssub ( newacc after-[ )
-    dup "](" sfind
-    dup 0 < [
-      ( no close bracket: put [ back and bail )
-      drop "[" swap s+
-    ] [
-      ( newacc after-[ linkclose-pos )
-      over 0 2 pick ssub ( link-text )
-      rot swap ( newacc link-text after-[ linkclose-pos )
-      drop ( newacc link-text after-[ )
-      dup "](" sfind 2 + over slen over - ssub ( after-bracket-paren )
-      dup ")" sfind
-      dup 0 < [
-        ( no close-paren: reconstruct and bail )
-        drop rot swap "[" swap s+ "](" s+ swap s+ ( newacc rest' )
-      ] [
-        ( after-paren-start paren-pos )
-        over 0 2 pick ssub ( url )
-        ( fix .md links to .html )
-        dup ".md)" sends [ ".md" ".html" sreplace ] [] ifte
-        dup ".md#" sfind 0 < not [ ".md" ".html" sreplace ] [] ifte
-        ( stack: newacc linktext after-paren-start paren-pos url )
-        rot swap 1 + over slen over - ssub ( newacc linktext url rest )
-        rot rot ( newacc rest linktext url )
-        swap "<a href=\"" swap s+ "\">" s+ swap s+ "</a>" s+ ( newacc rest link-html )
-        rot swap s+ swap ( newacc' rest )
-      ] ifte
-    ] ifte
-  ] repeat
-  s+
-;
-
-( Full inline processing pipeline )
-: process-inline
-  html-esc
-  code-span
-  bold-span
-  link-span
-;
-
-( === Parser state === )
-( Use a struct for mutable state )
-struct: PState
-  i64 mode    ( 0=normal 1=code 2=para 3=list 4=table )
-  i64 tbl     ( table header done flag )
-;
-:: ps PState.alloc ;
-: ps-mode ps PState.mode@ nip ;
-: ps-mode! ps PState.mode! drop ;
-: ps-tbl ps PState.tbl@ nip ;
-: ps-tbl! ps PState.tbl! drop ;
-: ps-reset 0 ps-mode! 0 ps-tbl! ;
-
-( Close current block )
-: close-block
-  ps-mode
-  dup 2 = [ drop "</p>\n" ] [
-  dup 3 = [ drop "</ul>\n" ] [
-  dup 4 = [ drop "</tbody></table>\n" ] [
-  drop ""
-  ] ifte ] ifte ] ifte
-  0 ps-mode!
-;
-
-( === Block-level parsing === )
-
-( Heading level: count leading # chars )
-: heading-level
-  dup "######" sstarts [ drop 6 ] [
-  dup "#####" sstarts [ drop 5 ] [
-  dup "####" sstarts [ drop 4 ] [
-  dup "###" sstarts [ drop 3 ] [
-  dup "##" sstarts [ drop 2 ] [
-  dup "#" sstarts [ drop 1 ] [
-  drop 0
-  ] ifte ] ifte ] ifte ] ifte ] ifte ] ifte
-;
-
-( Render heading with level: acc line -- acc' )
-: render-heading [ | acc line |
-  line heading-level [ | lvl |
-    acc close-block s+
-    "<h" s+ lvl i>s s+ ">" s+
-    line lvl 1 + line slen lvl 1 + - ssub strim process-inline s+
-    "</h" s+ lvl i>s s+ ">\n" s+
-  ] do
+: .h [ | text lvl |
+  "<h" lvl i>s s+ ">" s+ text s+ "</h" s+ lvl i>s s+ ">\n" s+
 ] do ;
 
-( Table header row: |col|col| -> <thead><tr><th>...</th></tr></thead> )
-: table-header
-  "|" ssplit
-  "<thead><tr>" swap
-  [
-    strim dup slen 0 = [ drop ] [
-      swap "<th>" s+ swap process-inline s+ "</th>" s+
-    ] ifte
-  ] each
-  "</tr></thead><tbody>\n" s+
-;
+: .p "<p>" swap s+ "</p>\n" s+ ;
 
-( Table data row )
-: table-row
-  "|" ssplit
-  "<tr>" swap
-  [
-    strim dup slen 0 = [ drop ] [
-      swap "<td>" s+ swap process-inline s+ "</td>" s+
-    ] ifte
-  ] each
-  "</tr>\n" s+
-;
+: .hr "<hr>\n" ;
 
-( Check if line is table separator |---|---| )
-: table-sep?
-  strim dup "|" sstarts [ "-" sfind 0 < not ] [ drop 0 ] ifte
-;
-
-( Parse one line: acc line -- acc' )
-: parse-line [ | acc line |
-  ps-mode 1 = [
-    ( Inside code block )
-    line "```" sstarts [
-      acc "</code></pre>\n" s+ 0 ps-mode!
-    ] [
-      acc line html-esc s+ "\n" s+
-    ] ifte
+: .pre [ | content lang |
+  lang slen 0 > [
+    "<pre><code class=\"language-" lang s+ "\">" s+ content s+ "</code></pre>\n" s+
   ] [
-    line slen 0 = [
-      ( Blank line: close block )
-      acc close-block s+
-    ] [
-    line "```" sstarts [
-      ( Open code block )
-      acc close-block s+
-      line 3 line slen 3 - ssub strim
-      dup slen 0 = [ drop "<pre><code>" s+ ] [
-        "<pre><code class=\"language-" swap s+ "\">" s+
-      ] ifte
-      1 ps-mode!
-    ] [
-    line heading-level 0 > [
-      acc line render-heading
-    ] [
-    line "---" s= [
-      acc close-block s+ "<hr>\n" s+
-    ] [
-    line "- " sstarts [
-      ps-mode 3 = not [ acc close-block s+ "<ul>\n" s+ 3 ps-mode! ] [ acc ] ifte
-      line 2 line slen 2 - ssub process-inline
-      swap "<li>" s+ swap s+ "</li>\n" s+
-    ] [
-    line "|" sstarts [
-      line table-sep? [
-        acc ( skip separator, return acc unchanged )
+    "<pre><code>" content s+ "</code></pre>\n" s+
+  ] ifte
+] do ;
+
+: .code "<code>" swap s+ "</code>" s+ ;
+
+: .strong "<strong>" swap s+ "</strong>" s+ ;
+
+: .a [ | text url |
+  "<a href=\"" url s+ "\">" s+ text s+ "</a>" s+
+] do ;
+
+: .li "<li>" swap s+ "</li>\n" s+ ;
+
+: .ul "<ul>\n" swap s+ "</ul>\n" s+ ;
+
+( === Quote building helpers === )
+: q, qpush ;
+: q+ q, \s+ qpush ;
+
+( === Inline parser === )
+( min-pos: pick minimum non-negative value, treat negatives as infinity )
+( a b -- min )
+: min-pos
+  over 0 < [ swap drop ] [
+    dup 0 < [ drop ] [
+      over over > [ swap ] then drop
+    ] ifte
+  ] ifte
+;
+
+( Parse inline markdown formatting, returns HTML string )
+( Finds leftmost marker, processes it, recurses on the rest )
+: parse-inline [ | s |
+  s slen 0 = [ "" ] [
+    s "`" sfind s "**" sfind min-pos s "[" sfind min-pos
+    dup 0 < [
+      ( no markers found )
+      drop s html-esc
+    ] [ [ | pos |
+      s 0 pos ssub html-esc ( prefix )
+      s pos 1 ssub "`" s= [
+        ( --- code span --- )
+        s pos 1 + s slen pos 1 + - ssub [ | after |
+          after "`" sfind dup 0 < [
+            drop "`" after parse-inline s+
+          ] [ [ | end |
+            after 0 end ssub html-esc .code
+            after end 1 + after slen end 1 + - ssub parse-inline s+
+          ] do ] ifte
+        ] do
       ] [
-        ps-mode 4 = not [
-          acc close-block s+ "<table>\n" s+ 4 ps-mode! 1 ps-tbl!
-          line table-header s+
+        s pos 2 ssub "**" s= [
+          ( --- bold --- )
+          s pos 2 + s slen pos 2 + - ssub [ | after |
+            after "**" sfind dup 0 < [
+              drop "**" after parse-inline s+
+            ] [ [ | end |
+              after 0 end ssub parse-inline .strong
+              after end 2 + after slen end 2 + - ssub parse-inline s+
+            ] do ] ifte
+          ] do
         ] [
-          acc line table-row s+
+          ( --- link [text](url) --- )
+          s pos 1 + s slen pos 1 + - ssub [ | after |
+            after "](" sfind dup 0 < [
+              drop "[" after parse-inline s+
+            ] [ [ | bpos |
+              after 0 bpos ssub parse-inline ( link text )
+              after bpos 2 + after slen bpos 2 + - ssub [ | urlrest |
+                urlrest ")" sfind dup 0 < [
+                  drop ( unmatched paren )
+                  "[" after parse-inline s+
+                ] [ [ | epos |
+                  urlrest 0 epos ssub ( url )
+                  ( rewrite .md -> .html, handle .md#fragment too )
+                  dup ".md" sfind dup 0 < [ drop ] [
+                    [ | url mdpos |
+                      url 0 mdpos ssub ".html" s+ url mdpos 3 + url slen mdpos 3 + - ssub s+
+                    ] do
+                  ] ifte
+                  .a
+                  urlrest epos 1 + urlrest slen epos 1 + - ssub parse-inline s+
+                ] do ] ifte
+              ] do
+            ] do ] ifte
+          ] do
         ] ifte
       ] ifte
-    ] [
-      ( Paragraph text )
-      ps-mode 2 = not [
-        acc close-block s+ "<p>" s+ line process-inline s+ 2 ps-mode!
-      ] [
-        acc " " s+ line process-inline s+
-      ] ifte
-    ] ifte ] ifte ] ifte ] ifte ] ifte ] ifte ] ifte
+      s+ ( prefix + result )
+    ] do ] ifte
   ] ifte
 ] do ;
 
-( Convert markdown to HTML )
-: md>html
-  ps-reset
-  slines "" swap [ swap parse-line ] each
-  close-block s+
+( === Heading level === )
+: heading-level
+  [ ["######" sstarts] [6]
+    ["#####" sstarts]  [5]
+    ["####" sstarts]   [4]
+    ["###" sstarts]    [3]
+    ["##" sstarts]     [2]
+    ["#" sstarts]      [1]
+    [0]
+  ] cond
 ;
 
-( === Navigation === )
-: build-nav [ | files |
-  "" files
-  [
-    [ | nav filename |
-      filename ".md" "" sreplace [ | stem |
-        nav "<a href=\"" s+ stem ".html" s+ s+ "\">" s+
-        stem "README" s= [ "Home" ] [ stem ] ifte
-        s+ "</a> " s+
-      ] do
-    ] do
-  ] each
+( === Block parser helpers === )
+
+( Flush paragraph: q para -- q' )
+: flush-para
+  dup slen 0 > [
+    parse-inline q, \.p qpush \s+ qpush
+  ] [
+    drop
+  ] ifte
+;
+
+( Flush code block: q cbuf clang -- q' )
+: flush-code [ | q buf lang |
+  buf slen 0 > [
+    q buf html-esc q, lang q, \.pre qpush \s+ qpush
+  ] [ q ] ifte
 ] do ;
+
+( Collect consecutive "- " lines into HTML list items )
+( lines acc -- lines' acc' )
+: collect-li
+  over qempty? [
+    ( empty queue, return as-is )
+  ] [
+    over qhead "- " sstarts [
+      over qhead [ | line |
+        swap qtail swap
+        line 2 line slen 2 - ssub parse-inline .li s+
+        collect-li
+      ] do
+    ] then
+  ] ifte
+;
+
+( Split table row respecting \| escapes )
+( s -- cells )
+: table-split
+  "\\|" "\0" sreplace "|" ssplit [ "\0" "|" sreplace ] map
+;
+
+( Build table cells from a split row )
+( cells is-header -- html )
+: build-cells [ | cells hdr |
+  cells qempty? [ "" ] [
+    cells qhead strim parse-inline
+    hdr [ "<th>" swap s+ "</th>" s+ ] [ "<td>" swap s+ "</td>" s+ ] ifte
+    cells qtail hdr build-cells s+
+  ] ifte
+] do ;
+
+( Collect consecutive "|" lines and build table HTML )
+( lines acc row# -- lines' html )
+: collect-tr [ | lines acc rownum |
+  lines qempty? [ lines acc ] [
+    lines qhead "|" sstarts not [ lines acc ] [
+      lines qhead 1 lines qhead slen 2 - ssub table-split
+      dup qhead strim "-" sstarts [
+        ( separator row - skip )
+        drop lines qtail acc rownum collect-tr
+      ] [
+        ( data/header row - build cells directly on stack )
+        rownum 1 = build-cells
+        "<tr>" swap s+ "</tr>\n" s+
+        acc swap s+ lines qtail swap rownum 1 + collect-tr
+      ] ifte
+    ] ifte
+  ] ifte
+] do ;
+
+( === Recursive block parser === )
+( q lines mode cbuf clang pbuf -- q' )
+( mode: 0=normal, 1=code )
+: parse-lines [ | q lines mode cbuf clang pbuf |
+  lines qempty? [
+    ( EOF: flush remaining state )
+    mode 1 = [
+      q cbuf clang flush-code
+    ] [
+      q pbuf flush-para
+    ] ifte
+  ] [
+    lines qhead lines qtail [ | line rest |
+      mode 1 = [
+        ( === code mode === )
+        line "```" sstarts [
+          ( close code block )
+          q cbuf clang flush-code
+          rest 0 "" "" "" parse-lines
+        ] [
+          ( accumulate code line )
+          q rest 1
+          cbuf slen 0 > [ cbuf "\n" s+ line s+ ] [ line ] ifte
+          clang pbuf parse-lines
+        ] ifte
+      ] [
+        ( === normal mode === )
+        line slen 0 = [
+          ( blank line: flush paragraph )
+          q pbuf flush-para
+          rest 0 cbuf clang "" parse-lines
+        ] [
+          line "- " sstarts [
+            ( list: flush paragraph, collect all consecutive list items )
+            q pbuf flush-para [ | q2 |
+              lines "" collect-li [ | rest2 html |
+                q2 html .ul q, \s+ qpush
+                rest2 0 cbuf clang "" parse-lines
+              ] do
+            ] do
+          ] [
+            line "|" sstarts [
+              ( table: flush paragraph, collect all consecutive table rows )
+              q pbuf flush-para [ | q2 |
+                lines "" 1 collect-tr [ | rest2 html |
+                  q2 "<table>\n" html s+ "</table>\n" s+ q, \s+ qpush
+                  rest2 0 cbuf clang "" parse-lines
+                ] do
+              ] do
+            ] [
+              line heading-level [ | lvl |
+                lvl 0 > [
+                  ( heading )
+                  q pbuf flush-para
+                  line lvl 1 + line slen lvl 1 + - ssub strim parse-inline q,
+                  lvl q, \.h qpush \s+ qpush
+                  rest 0 cbuf clang "" parse-lines
+                ] [
+                  line "```" sstarts [
+                    ( open code fence )
+                    q pbuf flush-para
+                    rest 1 ""
+                    line 3 line slen 3 - ssub strim
+                    "" parse-lines
+                  ] [
+                    line "---" s= [
+                      ( horizontal rule )
+                      q pbuf flush-para
+                      \.hr qpush \s+ qpush
+                      rest 0 cbuf clang "" parse-lines
+                    ] [
+                      ( paragraph text: accumulate )
+                      q rest 0 cbuf clang
+                      pbuf slen 0 > [ pbuf " " s+ line s+ ] [ line ] ifte
+                      parse-lines
+                    ] ifte
+                  ] ifte
+                ] ifte
+              ] do
+            ] ifte
+          ] ifte
+        ] ifte
+      ] ifte
+    ] do
+  ] ifte
+] do ;
+
+( Entry point: lines -- quote )
+: parse-blocks
+  qnil "" q,  ( start with [""] )
+  swap 0 "" "" "" parse-lines
+;
 
 ( === Title extraction === )
-: extract-title
-  slines
-  dup qempty? [ drop "Untitled" ] [
-    qhead
-    dup "# " sstarts [
-      2 over slen 2 - ssub strim
-    ] [ drop "Untitled" ] ifte
+( Extract title from first # heading line )
+( lines -- title )
+: extract-title [ | lines |
+  lines qempty? [ "Untitled" ] [
+    lines qhead "# " sstarts [
+      lines qhead 2 lines qhead slen 2 - ssub strim
+    ] [
+      lines qtail extract-title
+    ] ifte
+  ] ifte
+] do ;
+
+( Is this line a nav breadcrumb? )
+( line -- flag )
+: nav-line?
+  dup dup "[" sstarts swap "**" sstarts or not [ drop 0 ] [
+    "|" sfind 0 >
   ] ifte
 ;
 
-( Strip breadcrumb nav line from docs pages )
-: strip-breadcrumb
-  slines
-  dup qlen 2 > [
-    dup 1 qnth
-    dup "[Home]" sstarts swap "| **" sfind 0 < not [ 1 ] [ 0 ] ifte [ 1 ] [ 0 ] ifte [
-      dup qhead swap qtail
-      dup qempty? not [ dup qhead slen 0 = [ qtail ] [] ifte ] [] ifte
-      swap qnil swap qpush swap cat
-    ] [] ifte
-  ] [] ifte
-  "" swap [ swap "\n" s+ swap s+ ] each
+( Remove nav breadcrumb lines from content )
+( lines -- lines' )
+: strip-nav [ nav-line? not ] filter ;
+
+( === HTML template === )
+( Color palette from raylib_synth_poly.fy )
+( BG: #010101  FG: #B4AFA5  AMBER: #FFB000 )
+
+: page-css
+  "*{box-sizing:border-box}"
+  "body{background:#010101;color:#d4d0c8;font-family:sans-serif;padding:0;margin:0;overflow-x:hidden}" s+
+  "::selection{background:#FFB000;color:#010101}" s+
+  "main{padding:0 45px 45px 45px;max-width:900px}" s+
+  "main>*{max-width:900px;margin-bottom:30px}" s+
+  "h1{font-size:24px;color:#fff;margin-bottom:10px}" s+
+  "h2{font-size:20px;color:#fff;margin-top:2rem}" s+
+  "h3{font-size:16px;color:#fff}" s+
+  "p{line-height:25px;font-size:16px;margin-top:0;max-width:700px}" s+
+  "a{color:#d4d0c8;text-decoration:underline}" s+
+  "a:hover{color:#FFB000}" s+
+  "code{background:#1a1a18;padding:2px 5px;font-family:monospace;font-size:.9em;border-radius:2px;color:#FFB000}" s+
+  "pre{max-width:700px;background:#1a1a18;padding:15px;overflow-x:auto;margin-bottom:30px}" s+
+  "pre code{background:none;padding:0;color:#B4AFA5;display:block;white-space:pre;font-size:14px}" s+
+  "table{max-width:700px;margin-bottom:30px;border-collapse:collapse;border:1px solid #1a1a18}" s+
+  "th,td{border:1px solid #1a1a18;padding:5px 15px;vertical-align:top;text-align:left}" s+
+  "th{font-weight:bold;color:#d4d0c8}" s+
+  "ul{line-height:25px;max-width:700px;padding-left:1.5rem;margin:0 0 30px 0}" s+
+  "li{margin:.25rem 0}" s+
+  "hr{border:none;border-top:1px solid #B4AFA5;margin:2rem 0;clear:both}" s+
+  "nav{padding:20px 45px;max-width:900px;margin-top:30px;margin-bottom:10px}" s+
+  "nav a{margin-right:15px;text-decoration:none;color:#B4AFA5}" s+
+  "nav a:hover{color:#FFB000}" s+
+  "nav a.active{color:#FFB000}" s+
+  "strong{color:#d4d0c8}" s+
+  "@media only screen and (max-width:900px){main{padding:20px}nav{padding:20px}}" s+
 ;
 
+( Emit a nav link, marking active page )
+( acc href label current-href -- acc' )
+: nav-link [ | acc href label cur |
+  acc "<a href=\"" s+ href s+ "\""  s+
+  href cur s= [ " class=\"active\"" s+ ] then
+  ">" s+ label s+ "</a>" s+
+] do ;
+
+( title body html-name -- html )
+: wrap-page [ | title body name |
+  "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+  "<meta charset=\"utf-8\">\n" s+
+  "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" s+
+  "<title>" s+ title s+ " - fy</title>\n" s+
+  "<style>" s+ page-css s+ "</style>\n" s+
+  "</head>\n<body>\n<nav>" s+
+  "README.html" "Home" name nav-link
+  "getting-started.html" "Getting Started" name nav-link
+  "language-guide.html" "Language Guide" name nav-link
+  "builtins.html" "Builtins" name nav-link
+  "ffi.html" "FFI" name nav-link
+  "macros.html" "Macros" name nav-link
+  "examples.html" "Examples" name nav-link
+  "</nav>\n<main>\n" s+
+  body s+
+  "</main>\n</body>\n</html>\n" s+
+] do ;
+
 ( === File processing === )
-: process-file [ | filename nav |
-  src-dir "/" s+ filename s+ slurp [ | content |
-    content strip-breadcrumb [ | clean |
-      clean extract-title [ | title |
-        title clean md>html nav template [ | html |
-          out-dir "/" s+ filename ".md" ".html" sreplace s+ html swap spit drop
+( Convert a .md filename to .html )
+( path -- html-name )
+: md>html
+  dup slen 3 - 0 swap ssub ".html" s+
+;
+
+( Process a single markdown file )
+( src-dir out-dir filename -- )
+: process-file [ | src out name |
+  src "/" s+ name s+ slurp [ | content |
+    content slines [ | lines |
+      lines extract-title [ | title |
+        lines strip-nav parse-blocks do [ | body |
+          name md>html [ | htmlname |
+            title body htmlname wrap-page [ | html |
+              out "/" s+ htmlname s+ [ | dest |
+                html dest spit drop
+                "  " swrite name swrite " -> " swrite dest swrite "\n" swrite
+              ] do
+            ] do
+          ] do
         ] do
       ] do
     ] do
@@ -335,15 +406,15 @@ struct: PState
 ] do ;
 
 ( === Main === )
-out-dir mkdir-p drop
-
-src-dir dir-list
-[ ".md" sends ] filter
-
-dup build-nav
-
-swap
-[ over swap process-file ] each
-drop
-
-"\nSite generated in " swrite out-dir swrite "/\n" swrite
+"docs" "build" [ | src out |
+  out mkdir-p drop
+  "Building site from " swrite src swrite " to " swrite out swrite "...\n" swrite
+  src dir-list [ | files |
+    files [
+      dup ".md" sends [
+        src out rot process-file
+      ] [ drop ] ifte
+    ] each drop
+  ] do
+  "Done.\n" swrite
+] do

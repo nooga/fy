@@ -2081,9 +2081,9 @@ const Fy = struct {
         // f -- !f (boolean not)
         .{ "not", inlineWord(&[_]u32{
             Asm.@".pop x0",
-            Asm.@"cbz Xn, offset"(0, 2),
+            Asm.@"cbz Xn, offset"(0, 3),
             Asm.@"mov x0, #0",
-            Asm.@"b offset"(1),
+            Asm.@"b offset"(2),
             Asm.@"mov x0, #1",
             Asm.@".push x0",
         }, 1, 1) },
@@ -2913,7 +2913,7 @@ const Fy = struct {
                     },
                     .String => |s| {
                         first = false;
-                        const dup_s = try self.fy.fyalloc.dupe(u8, s);
+                        const dup_s = try unescapeString(self.fy.fyalloc, s);
                         try items.append(Fy.Heap.Item{ .String = dup_s });
                     },
                 }
@@ -4385,9 +4385,12 @@ const Fy = struct {
             new_items.deinit();
             return qv;
         }
-        // Clone locals_names
+        // Clone locals_names — re-fetch q since recursive replaceWordInQuote
+        // calls above may have triggered heap.entries reallocation via storeQuote,
+        // invalidating the original q pointer.
+        const q_fresh = self.heap.getQuote(qv);
         var new_locals = std.ArrayList([]u8).init(self.fyalloc);
-        for (q.locals_names.items) |ln| {
+        for (q_fresh.locals_names.items) |ln| {
             try new_locals.append(try self.fyalloc.dupe(u8, ln));
         }
         const new_qv = try self.heap.storeQuote(new_items);
