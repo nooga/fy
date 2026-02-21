@@ -52,6 +52,7 @@ pub const @"ldr x1, [x21], #8" = 0xf84086a1;
 
 pub const @"mov x29, sp" = 0x910003fd;
 pub const @"mov sp, x29" = 0x910003bf;
+pub const @"mov x20, sp" = 0x910003f4;
 
 pub const @"mov x0, #0" = 0xd2800000;
 pub const @"mov x0, #1" = 0xd2800020;

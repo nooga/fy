@@ -157,7 +157,7 @@
     },
     "flow-control": {
       "name": "keyword.control.flow.fy",
-      "match": "(?<=\\s|^)(ifte|do\\?|do|times|dotimes|repeat|recur|not|dip)(?=\\s|$|;|\\])"
+      "match": "(?<=\\s|^)(ifte|then|unless|cond|do\\?|do|times|dotimes|repeat|recur|not|dip)(?=\\s|$|;|\\])"
     },
     "operators": {
       "name": "keyword.operator.fy",

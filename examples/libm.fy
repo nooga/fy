@@ -13,6 +13,7 @@
 :: _sqrt _lib "sqrt" dl-sym ;
 :: _cbrt _lib "cbrt" dl-sym ;
 :: _exp _lib "exp" dl-sym ;
+:: _tanh _lib "tanh" dl-sym ;
 :: _log _lib "log" dl-sym ;
 :: _log10 _lib "log10" dl-sym ;
 :: _log2 _lib "log2" dl-sym ;
@@ -35,6 +36,7 @@
 : sqrt  _sqrt sig: d:d ;
 : cbrt  _cbrt sig: d:d ;
 : exp  _exp sig: d:d ;
+: tanh  _tanh sig: d:d ;
 : log  _log sig: d:d ;
 : log10  _log10 sig: d:d ;
 : log2  _log2 sig: d:d ;

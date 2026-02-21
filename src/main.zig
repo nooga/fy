@@ -386,10 +386,17 @@ const Fy = struct {
             Quote: Value, // nested quote as heap ref
         };
 
+        const CaptureInfo = struct {
+            name: []u8,
+            offset: u32, // byte offset in enclosing frame (x20-relative)
+        };
+
         const QuoteObj = struct {
             items: std.ArrayList(Item),
             // Immutable lexical locals declared in [ | a b | ... ]
             locals_names: std.ArrayList([]u8),
+            // Captured variables from enclosing scope (populated by compileQuote)
+            captures: std.ArrayList(CaptureInfo),
             cached_ptr: ?usize = null,
         };
 
@@ -440,6 +447,8 @@ const Fy = struct {
                     };
                     for (q.locals_names.items) |nm| self.allocator.free(nm);
                     q.locals_names.deinit();
+                    for (q.captures.items) |cap| self.allocator.free(cap.name);
+                    q.captures.deinit();
                     q.items.deinit();
                 },
                 .Free => return,
@@ -508,6 +517,8 @@ const Fy = struct {
                         };
                         for (q.locals_names.items) |nm| self.allocator.free(nm);
                         q.locals_names.deinit();
+                        for (q.captures.items) |cap| self.allocator.free(cap.name);
+                        q.captures.deinit();
                         q.items.deinit();
                     },
                     .Free => {},
@@ -562,7 +573,7 @@ const Fy = struct {
         }
 
         fn storeQuote(self: *Heap, items: std.ArrayList(Item)) !Value {
-            const q = QuoteObj{ .items = items, .locals_names = std.ArrayList([]u8).init(self.allocator), .cached_ptr = null };
+            const q = QuoteObj{ .items = items, .locals_names = std.ArrayList([]u8).init(self.allocator), .captures = std.ArrayList(CaptureInfo).init(self.allocator), .cached_ptr = null };
             const id = try self.allocSlot(Entry{ .Quote = q });
             return Fy.makeStr(id);
         }
@@ -793,7 +804,8 @@ const Fy = struct {
                         items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
                     },
                     .Quote => {
-                        // Inline single-item quotations (e.g. from \word syntax)
+                        // Inline single-item quotations only for non-Quote items (e.g. from \word syntax)
+                        // Preserve single-element quotes wrapping sub-quotes (e.g. [[ chord ]] wrappers)
                         const inner = fy.heap.getQuote(x);
                         if (inner.items.items.len == 1) {
                             const single = inner.items.items[0];
@@ -802,7 +814,7 @@ const Fy = struct {
                                 .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
                                 .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch @panic("oom"),
                                 .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                                .Quote => items.append(Heap.Item{ .Quote = x }) catch @panic("oom"),
                             }
                         } else {
                             items.append(Heap.Item{ .Quote = x }) catch @panic("oom");
@@ -2576,6 +2588,7 @@ const Fy = struct {
         fn canInlineQuote(self: *Compiler, qv: Value) bool {
             const q = self.fy.heap.getQuote(qv);
             if (q.locals_names.items.len > 0) return false;
+            if (q.captures.items.len > 0) return false;
             for (q.items.items) |it| switch (it) {
                 .Word => |w| {
                     const word = if (self.namespace) |ns| blk: {
@@ -3177,8 +3190,9 @@ const Fy = struct {
             var tramp = std.ArrayList(u32).init(self.fy.fyalloc);
             defer tramp.deinit();
 
-            // Save frame and fy data stack registers
+            // Save frame, x20 (locals frame pointer), and fy data stack registers
             tramp.append(Asm.@"stp x29, x30, [sp, #0x10]!") catch return Error.OutOfMemory;
+            tramp.append(Asm.@".rpush Xn"(20)) catch return Error.OutOfMemory;
             tramp.append(Asm.@"stp x21, x22, [sp, #0x10]!") catch return Error.OutOfMemory;
 
             // Set up private data stack: x21 = x22 = top of callback stack
@@ -3239,8 +3253,9 @@ const Fy = struct {
                 }
             }
 
-            // Restore fy data stack registers and frame, return to C
+            // Restore fy data stack registers, x20, and frame; return to C
             tramp.append(Asm.@"ldp x21, x22, [sp], #0x10") catch return Error.OutOfMemory;
+            tramp.append(Asm.@".rpop Xn"(20)) catch return Error.OutOfMemory;
             tramp.append(Asm.@"ldp x29, x30, [sp], #0x10") catch return Error.OutOfMemory;
             tramp.append(Asm.ret) catch return Error.OutOfMemory;
 
@@ -4393,10 +4408,15 @@ const Fy = struct {
         for (q_fresh.locals_names.items) |ln| {
             try new_locals.append(try self.fyalloc.dupe(u8, ln));
         }
+        var new_captures = std.ArrayList(Heap.CaptureInfo).init(self.fyalloc);
+        for (q_fresh.captures.items) |cap| {
+            try new_captures.append(.{ .name = try self.fyalloc.dupe(u8, cap.name), .offset = cap.offset });
+        }
         const new_qv = try self.heap.storeQuote(new_items);
         self.heap.addRoot(Fy.getStrId(new_qv));
         const new_qobj = self.heap.getQuote(new_qv);
         new_qobj.locals_names = new_locals;
+        new_qobj.captures = new_captures;
         return new_qv;
     }
 
@@ -4409,15 +4429,31 @@ const Fy = struct {
         // calls during compilation. The ArrayList buffers themselves are separate
         // allocations that survive entries reallocation.
         const locals_names = q.locals_names.items;
+        const quote_captures = q.captures.items;
         const items = q.items.items;
         // Quotes share the data stack with their caller — only save LR/FP, not x21/x22
         try c.enterPersist();
         const locals_len: usize = locals_names.len;
         var frame_size: usize = 0;
+        var did_set_x20 = false;
         if (locals_len > 0) {
-            frame_size = locals_len * @sizeOf(Value);
+            // Always save x20 and set frame pointer when we have locals.
+            // When captures exist, copy captured values into the frame so that
+            // nested quotes can access them via x20 (avoids runtime _cap allocation).
+            try c.emit(Asm.@".rpush Xn"(20)); // save old x20
+            did_set_x20 = true;
+            const total_slots = locals_len + quote_captures.len;
+            frame_size = total_slots * @sizeOf(Value);
             frame_size = (frame_size + 15) & ~@as(usize, 15);
             try c.emit(Asm.sub_sp_imm(@intCast(frame_size)));
+            // Copy captures from parent frame (x20) into our frame
+            for (quote_captures, 0..) |cap, ci| {
+                try c.emit(Asm.ldr_x_imm(0, 20, @intCast(cap.offset)));
+                const dest_off: u32 = @intCast((locals_len + ci) * @sizeOf(Value));
+                try c.emit(Asm.str_sp_x0(dest_off));
+            }
+            try c.emit(Asm.@"mov x20, sp"); // x20 = locals frame base
+            // Pop locals from data stack into frame
             var i: isize = @intCast(locals_len);
             while (i > 0) : (i -= 1) {
                 try c.emit(Asm.@".pop x0");
@@ -4448,7 +4484,22 @@ const Fy = struct {
                     const off: u32 = @intCast(li * @sizeOf(Value));
                     try c.emit(Asm.ldr_sp_x0(off));
                     try c.emitPush();
-                } else {
+                } else capture_check: {
+                    // Check if it's a captured variable from enclosing scope
+                    for (quote_captures, 0..) |cap, ci| {
+                        if (std.mem.eql(u8, cap.name, w)) {
+                            if (did_set_x20) {
+                                // Captures were copied into our frame at locals_len + ci
+                                const new_off: u32 = @intCast((locals_len + ci) * @sizeOf(Value));
+                                try c.emit(Asm.ldr_sp_x0(new_off));
+                            } else {
+                                // No local frame; read from enclosing frame via x20
+                                try c.emit(Asm.ldr_x_imm(0, 20, @intCast(cap.offset)));
+                            }
+                            try c.emitPush();
+                            break :capture_check;
+                        }
+                    }
                     if (self.findWord(w)) |wd| {
                         // Check for immediate (macro) words — invoke at compile time
                         if (wd.immediate) {
@@ -4484,46 +4535,61 @@ const Fy = struct {
 
                     // Collect captures: (local_index, local_name) pairs
                     const CapInfo = struct { idx: usize, name: []const u8 };
-                    var captures = std.ArrayList(CapInfo).init(self.fyalloc);
-                    defer captures.deinit();
+                    var found_caps = std.ArrayList(CapInfo).init(self.fyalloc);
+                    defer found_caps.deinit();
                     for (refs.items) |ref_w| {
+                        var found = false;
                         for (locals_names, 0..) |ln, idx| {
                             if (std.mem.eql(u8, ln, ref_w)) {
-                                captures.append(.{ .idx = idx, .name = ln }) catch {};
+                                found_caps.append(.{ .idx = idx, .name = ln }) catch {};
+                                found = true;
                                 break;
                             }
                         }
+                        // Also check our own captures (enables multi-level capture chains)
+                        if (!found) {
+                            for (quote_captures, 0..) |cap, ci| {
+                                if (std.mem.eql(u8, cap.name, ref_w)) {
+                                    found_caps.append(.{ .idx = locals_len + ci, .name = cap.name }) catch {};
+                                    break;
+                                }
+                            }
+                        }
                     }
-                    if (captures.items.len == 0) break :capture_blk;
+                    if (found_caps.items.len == 0) break :capture_blk;
 
-                    // Emit: push captured_value, push name_string, push quote, call _cap
-                    // Chain for each capture: each _cap replaces one word and returns new quote
+                    if (did_set_x20) {
+                        // Frame pointer approach: record captures in nested quote
+                        // so it can access our locals via x20 at zero cost
+                        for (found_caps.items) |cap| {
+                            const name_copy = self.fyalloc.dupe(u8, cap.name) catch break :capture_blk;
+                            const off: u32 = @intCast(cap.idx * @sizeOf(Value));
+                            nested_q.captures.append(.{ .name = name_copy, .offset = off }) catch break :capture_blk;
+                        }
+                        nested_q.cached_ptr = null; // force recompilation with captures
+                        c.trackQuote(qv);
+                        try c.emitNumber(@as(u64, @bitCast(qv)), 0);
+                        try c.emitPush();
+                        continue;
+                    }
+
+                    // Fallback: _cap for multi-level captures (x20 not set by us)
                     const cap_word = self.findWord("_cap") orelse @panic("_cap builtin not found");
-
-                    // First: push the original quote
                     c.trackQuote(qv);
                     try c.emitNumber(@as(u64, @bitCast(qv)), 0);
                     try c.emitPush();
 
-                    for (captures.items) |cap| {
-                        // Stack: ... quote
-                        // Push name string
+                    for (found_caps.items) |cap| {
                         const name_v = try self.heap.storeString(cap.name);
                         self.heap.addRoot(Fy.getStrId(name_v));
                         try c.emitNumber(@as(u64, @bitCast(name_v)), 0);
                         try c.emitPush();
-                        // Stack: ... quote name
-                        // Load captured value from frame
                         const off: u32 = @intCast(cap.idx * @sizeOf(Value));
                         try c.emit(Asm.ldr_sp_x0(off));
                         try c.emitPush();
-                        // Stack: ... quote name value
-                        // Call _cap: (value name quote -- quote')
-                        // _cap pops: value(TOS) name quote, pushes quote'
                         c.resetQuoteTracking();
                         try c.emitWord(cap_word);
                     }
-                    // Stack: ... captured_quote
                     continue;
                 }
                 c.trackQuote(qv);
@@ -4533,6 +4599,9 @@ const Fy = struct {
         };
         if (frame_size > 0) {
             try c.emit(Asm.add_sp_imm(@intCast(frame_size)));
+        }
+        if (did_set_x20) {
+            try c.emit(Asm.@".rpop Xn"(20)); // restore x20
         }
         try c.leavePersist();
         const code = try c.code.toOwnedSlice();

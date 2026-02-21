@@ -15,6 +15,7 @@ pow    dd:d
 sqrt   d:d
 cbrt   d:d
 exp    d:d
+tanh   d:d
 log    d:d
 log10  d:d
 log2   d:d

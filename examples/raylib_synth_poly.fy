@@ -74,28 +74,29 @@ struct: AudioStream
 ( --- ADSR envelope --- )
 : env-attack ( va -- )
   Voice.env@ ATTACK f+
-  dup 1.0 f> [ drop DEC swap Voice.stage! 1.0 ] [ ] ifte
+  dup 1.0 f> [ drop DEC swap Voice.stage! 1.0 ] then
   swap Voice.env! drop
 ;
 
 : env-decay ( va -- )
   Voice.env@ DECAY f-
-  dup SUSTAIN f< [ drop SUS swap Voice.stage! SUSTAIN ] [ ] ifte
+  dup SUSTAIN f< [ drop SUS swap Voice.stage! SUSTAIN ] then
   swap Voice.env! drop
 ;
 
 : env-release ( va -- )
   Voice.env@ RELEASE f-
-  dup 0.0 f< [ drop IDLE swap Voice.stage! 0.0 ] [ ] ifte
+  dup 0.0 f< [ drop IDLE swap Voice.stage! 0.0 ] then
   swap Voice.env! drop
 ;
 
 : env-step ( va -- )
   Voice.stage@
-  dup ATK = [ drop env-attack  ] [
-  dup DEC = [ drop env-decay   ] [
-  dup REL = [ drop env-release ] [
-  drop drop ] ifte ] ifte ] ifte
+  [ [ATK =] [env-attack]
+    [DEC =] [env-decay]
+    [REL =] [env-release]
+    [drop]
+  ] cond
 ;
 
 ( --- Piano key mapping --- )
@@ -115,14 +116,13 @@ struct: AudioStream
 
 : check-one ( [key semi idx] -- )
   do voice rot raylib:IsKeyDown
-  [ ( semi va -- key down: set freq, trigger attack )
-    over semitone>freq swap Voice.freq! nip
-    Voice.stage@ dup IDLE = swap REL = or
-    [ ATK swap Voice.stage! drop ] [ drop ] ifte
-  ] [ ( semi va -- key up: trigger release )
-    nip
-    Voice.stage@ dup 0 > swap 4 < &
-    [ REL swap Voice.stage! drop ] [ drop ] ifte
+  [ | semi va |
+    semi semitone>freq va Voice.freq! drop
+    va Voice.stage@ nip dup IDLE = swap REL = or
+    [ ATK va Voice.stage! drop ] then
+  ] [ | semi va |
+    va Voice.stage@ nip dup 0 > swap 4 < &
+    [ REL va Voice.stage! drop ] then
   ] ifte
 ;
 
@@ -130,26 +130,26 @@ struct: AudioStream
 
 : check-octave
   90 raylib:IsKeyPressed [
-    octave 1 > [ octave 1 - octave! ] [ ] ifte
-  ] [ ] ifte
+    octave 1 > [ octave 1 - octave! ] then
+  ] then
   88 raylib:IsKeyPressed [
-    octave 7 < [ octave 1 + octave! ] [ ] ifte
-  ] [ ] ifte
+    octave 7 < [ octave 1 + octave! ] then
+  ] then
 ;
 
 ( --- Sample generation --- )
 : gen-voice-sample ( va -- sample )
-  Voice.stage@ 0 > [
-    dup env-step
-    Voice.env@ >r
-    Voice.phase@
-    over Voice.freq@ nip
+  dup Voice.stage@ nip 0 > [ | va |
+    va env-step
+    va Voice.env@ nip
+    va Voice.phase@ nip
+    va Voice.freq@ nip
     lfo-phase @64 libm:sin VIB_DEPTH f* 1.0 f+ f*
-    TWO_PI f* SAMPLE_RATE f/ f+           ( va phase' )
-    dup libm:sin r> f* 0.2 f* 32000.0 f* f>i  ( va phase' sample )
-    -rot                                   ( sample va phase' )
-    dup TWO_PI f> [ TWO_PI f- ] [ ] ifte
-    swap Voice.phase! drop                 ( sample )
+    TWO_PI f* SAMPLE_RATE f/ f+
+    dup libm:sin rot f*
+    0.2 f* 32000.0 f* f>i
+    swap dup TWO_PI f> [ TWO_PI f- ] then
+    va Voice.phase! drop
   ] [
     drop 0
   ] ifte
@@ -164,7 +164,7 @@ struct: AudioStream
   ] dotimes
   drop
   lfo-phase @64 VIB_RATE TWO_PI f* SAMPLE_RATE f/ f+
-  dup TWO_PI f> [ TWO_PI f- ] [ ] ifte
+  dup TWO_PI f> [ TWO_PI f- ] then
   lfo-phase !64
 ;
 
@@ -203,11 +203,11 @@ struct: AudioStream
     dup i>f wave-x !64
     0.0 0
     NUM_VOICES [
-      dup voice Voice.stage@ 0 > [
-        Voice.env@ >r
-        Voice.freq@ nip wave-x @64 f*
+      dup voice dup Voice.stage@ nip 0 > [ | va |
+        va Voice.env@ nip
+        va Voice.freq@ nip wave-x @64 f*
         TWO_PI f* SAMPLE_RATE f/
-        libm:sin r> f* rot f+ swap
+        libm:sin f* rot f+ swap
       ] [
         drop
       ] ifte
@@ -223,14 +223,13 @@ struct: AudioStream
 
 : draw-wave-path ( -- )
   0
-  127 [
-    >r
-    r@ 680 * 127 / KB_X +
-    r@ 4 * wave-buf + @32
-    r@ 1 + 680 * 127 / KB_X +
-    r@ 1 + 4 * wave-buf + @32
+  127 [ | i |
+    i 680 * 127 / KB_X +
+    i 4 * wave-buf + @32
+    i 1 + 680 * 127 / KB_X +
+    i 1 + 4 * wave-buf + @32
     AMBER raylib:DrawLine
-    r> 1 +
+    i 1 +
   ] dotimes
   drop
 ;
