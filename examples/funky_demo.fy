@@ -1,91 +1,109 @@
 include "funky.fy"
 
-( --- 808 Bass drum: exponential pitch sweep 300->45Hz, long decay --- )
+( 808 bass drum )
 : bd ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
     dup 0.0 f< not over 0.5 f< & [ | age |
-      ( pitch sweep: 45 + 255 * exp(-age*40) )
-      age 40.0 f* 0.0 swap f- libm:exp 255.0 f* 45.0 f+
+      age 40.0 exp-decay 255.0 f* 45.0 f+
       age swap sine
-      ( amp envelope: fast attack, slow decay )
-      age 8.0 f* 0.0 swap f- libm:exp
+      age 8.0 exp-decay
       f* 1.5 f*
-    ] [
-      drop 0.0
-    ] ifte
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
-( --- 808 Hi-hat: filtered noise, very fast decay --- )
+( 808 hi-hat )
 : hh ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
     dup 0.0 f< not over 0.06 f< & [ | age |
       noise 0.5 f*
-      age 100.0 f* 0.0 swap f- libm:exp
-      f*
-    ] [
-      drop 0.0
-    ] ifte
+      age 100.0 exp-decay f*
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
-( --- 808 Open hi-hat: noise, slower decay --- )
+( 808 open hi-hat )
 : oh ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
     dup 0.0 f< not over 0.3 f< & [ | age |
       noise 0.4 f*
-      age 10.0 f* 0.0 swap f- libm:exp
-      f*
-    ] [
-      drop 0.0
-    ] ifte
+      age 10.0 exp-decay f*
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
-( --- 808 Snare: tuned body 185Hz + noise burst --- )
+( 808 snare )
 : sn ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
     dup 0.0 f< not over 0.2 f< & [ | age |
-      ( body: 185Hz sine with fast decay )
-      age 185.0 sine
-      age 15.0 f* 0.0 swap f- libm:exp f*
-      0.5 f*
-      ( noise burst )
-      noise 0.4 f*
-      age 20.0 f* 0.0 swap f- libm:exp f*
-      f+
-    ] [
-      drop 0.0
-    ] ifte
+      age 185.0 sine age 15.0 exp-decay f* 0.5 f*
+      noise 0.4 f* age 20.0 exp-decay f* f+
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
-( --- Sine synth with attack ramp to avoid zero-crossing pop --- )
-: syn ( ev t -- sample )
+( 808 clap )
+: clap ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
+    dup 0.0 f< not over 0.3 f< & [ | age |
+      ( 4 discrete bursts, rate 500 = true silence between them )
+      noise age 500.0 exp-decay f*
+      noise age 0.02 f- fabs 500.0 exp-decay f* f+
+      noise age 0.04 f- fabs 500.0 exp-decay f* f+
+      noise age 0.06 f- fabs 500.0 exp-decay f* f+
+      ( reverb tail — the 808 clap's sustain )
+      noise age 8.0 exp-decay f* 0.4 f* f+
+      ( bandpass: midrange body, not hihat-bright )
+      2000.0 ev 0 lp1
+      500.0 ev 1 hp1
+      2.0 f*
+    ] [ drop 0.0 ] ifte
+  ] do
+;
+
+( Moog funk bass )
+: bass ( ev t -- sample )
+  [ | ev t |
+    ev t note-age
     dup 0.0 f< not over 0.4 f< & [ | age |
       ev Event.freq@ nip
-      age swap sine
-      ( attack: 1 - exp(-age*500) rises to 1.0 in ~5ms )
-      age 500.0 f* 0.0 swap f- libm:exp 1.0 swap f-
-      ( decay: exp(-4t) )
-      age 4.0 f* 0.0 swap f- libm:exp
-      f* f*
-    ] [
-      drop 0.0
-    ] ifte
+      t swap saw
+      age 12.0 exp-decay 4000.0 f* 200.0 f+
+      0.7 ev 0 moog
+      age 6.0 exp-decay
+      f* 2.0 f*
+    ] [ drop 0.0 ] ifte
+  ] do
+;
+
+( Lush pad: detuned saws -> moog filter, slow attack --- )
+: pad ( ev t -- sample )
+  [ | ev t |
+    ev t note-age
+    dup 0.0 f< not over ev Event.dur@ nip 0.95 f* f< & [ | age |
+      ev Event.freq@ nip [ | freq |
+        t freq saw
+        t freq 1.005 f* saw f+
+        t freq 0.995 f* saw f+
+        0.33 f*
+      ] do
+      1200.0 0.15 ev 0 moog
+      age 8.0 exp-attack
+      age 1.5 exp-decay
+      f* f* 0.6 f*
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
 ( --- Saw lead: detuned saws + sub-octave --- )
 : lead ( ev t -- sample )
   [ | ev t |
-    t ev Event.start@ nip f-
+    ev t note-age
     dup 0.0 f< not over ev Event.dur@ nip 0.9 f* f< & [ | age |
       ev Event.freq@ nip [ | freq |
         age freq saw
@@ -93,24 +111,33 @@ include "funky.fy"
         0.5 f*
         age freq 8.0 f/ saw 0.3 f* f+
       ] do
-      age 3.0 f* 0.0 swap f- libm:exp
-      f*
-    ] [
-      drop 0.0
-    ] ifte
+      age 3.0 exp-decay f* 0.1 f*
+    ] [ drop 0.0 ] ifte
   ] do
 ;
 
-( --- Scene --- )
+120 bpm
+
 : scene
-  [ [ \bd [ \hh \hh ] \sn [ \hh \hh ] ]
-    [ \bd \~ \sn [ \hh \hh \oh ] ]
-  ] alt 2 fast
-  [ [[ 60 64 67 ]] [[ 62 65 69 ]] [[ 64 67 71 ]] [[ 65 69 72 ]] ] \syn s
+  ( drums )
+  [  \bd [\hh \hh] [[\sn \clap]] [\hh [[\bd \hh]]] 
+     [[\bd \hh]] [\hh \clap] [[\sn \clap]] [\hh  \oh] 
+  ] 
+
+  ( bass )
+  [ 36 \~ [36 48] \~ 39 \~ 43 [46 \~]
+    36 \~ [36 48] 36 39 41 43 [48 36]
+  ] 2 slow \bass s
   stack
-  [ [ 72 74 76 77 79 76 74 72 ]
-    [ 79 77 76 74 72 74 76 77 ]
-  ] alt \lead s
+
+  ( pad )
+  [ [[ 63 67 70 74 ]]
+    [[ 68 72 75 79 ]]
+  ] 2 slow \pad s
+  stack
+
+  ( arp )
+  [ [ 63 67 70 74 ] [ 68 72 75 79 ] ] 2 fast \lead s
   stack
 ;
 

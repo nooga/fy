@@ -7,6 +7,7 @@ import "raylib"
 
 ( --- Constants --- )
 :: TWO_PI 6.283185307179586 ;
+:: PI 3.141592653589793 ;
 :: SAMPLE_RATE 44100.0 ;
 
 ( --- Global Time and BPM --- )
@@ -30,12 +31,28 @@ struct: Event
   i64 inst    ( instrument quote or callback fptr )
 ;
 
-:: MAX_VOICES 32 ;
+:: MAX_VOICES 64 ;
 :: voices MAX_VOICES Event.size * alloc ;
 : voice ( i -- addr ) Event.size * voices + ;
 
 :: num-active-voices 8 alloc ;
 0 num-active-voices !64
+
+( --- Per-Voice State --- )
+:: VS_SLOTS 8 ;
+:: vs-buf MAX_VOICES VS_SLOTS * 8 * alloc ;
+: vs-addr ( ev slot -- addr )
+  swap voices - Event.size / VS_SLOTS * + 8 * vs-buf +
+;
+: vs@ ( ev slot -- value ) vs-addr @64 ;
+: vs! ( value ev slot -- ) vs-addr !64 ;
+: vs-clear ( -- )
+  0 MAX_VOICES VS_SLOTS * [
+    dup 8 * vs-buf + 0 swap !64
+    1+
+  ] dotimes
+  drop
+;
 
 ( --- Basic DSP --- )
 : fmod ( a b -- a%b )
@@ -65,12 +82,97 @@ struct: Event
   i>f 69.0 f- 12.0 f/ 2.0 swap libm:pow 440.0 f*
 ;
 
+: fabs ( f -- |f| ) dup 0.0 f< [ fneg ] then ;
+: clip ( sample -- clipped )
+  dup 1.0 f> [ drop 1.0 ] then
+  dup 1.0 fneg f< [ drop 1.0 fneg ] then
+;
+: saturate ( sample drive -- shaped ) f* libm:tanh ;
+
+( --- Envelopes --- )
+: note-age ( ev t -- age ) swap Event.start@ nip f- ;
+: exp-decay ( age rate -- env ) f* fneg libm:exp ;
+: exp-attack ( age rate -- env ) f* fneg libm:exp 1.0 swap f- ;
+: ad ( age atk-rate dec-rate -- env )
+  [ | age atk dec |
+    age atk exp-attack
+    age dec exp-decay
+    f*
+  ] do
+;
+
+( --- Oscillators --- )
+: square ( t freq -- sample )
+  f* 1.0 fmod 0.5 f< [ 1.0 ] [ 1.0 fneg ] ifte
+;
+
+: tri ( t freq -- sample )
+  f* 1.0 fmod
+  2.0 f* 1.0 f-
+  fabs 2.0 f* 1.0 f-
+;
+
+: pulse ( t freq width -- sample )
+  [ | t freq w |
+    t freq f* 1.0 fmod w f< [ 1.0 ] [ 1.0 fneg ] ifte
+  ] do
+;
+
+( --- Filters --- )
+: lp1 ( sample cutoff ev slot -- filtered )
+  [ | x fc ev slot |
+    TWO_PI fc f* SAMPLE_RATE f/ fneg libm:exp 1.0 swap f-
+    ev slot vs@
+    [ | alpha yprev |
+      yprev alpha x yprev f- f* f+
+    ] do
+    dup ev slot vs!
+  ] do
+;
+
+: hp1 ( sample cutoff ev slot -- filtered, uses slot and slot+1 )
+  [ | x fc ev slot |
+    TWO_PI fc f* SAMPLE_RATE f/ fneg libm:exp
+    ev slot vs@
+    ev slot 1 + vs@
+    [ | alpha yprev xprev |
+      alpha yprev x f+ xprev f- f*
+    ] do
+    dup ev slot vs!
+    x ev slot 1 + vs!
+  ] do
+;
+
+: moog ( sample cutoff reso ev slot -- filtered, uses 4 slots )
+  [ | x fc reso ev s |
+    TWO_PI fc f* SAMPLE_RATE f/
+    dup 1.0 f+ f/
+    ev s 3 + vs@
+    [ | alpha p4 |
+      x p4 reso 4.0 f* f* f- libm:tanh
+      ev s vs@ [ | inp p1 |
+        p1 alpha inp p1 f- f* f+
+      ] do dup ev s vs!
+      ev s 1 + vs@ [ | s1 p2 |
+        p2 alpha s1 p2 f- f* f+
+      ] do dup ev s 1 + vs!
+      ev s 2 + vs@ [ | s2 p3 |
+        p3 alpha s2 p3 f- f* f+
+      ] do dup ev s 2 + vs!
+      ev s 3 + vs@ [ | s3 p4b |
+        p4b alpha s3 p4b f- f* f+
+      ] do dup ev s 3 + vs!
+    ] do
+  ] do
+;
+
 ( --- Scene --- )
 :: scene-word-cell 8 alloc ;
 :: scene-pat-cell 8 alloc ;
 
 ( --- Pattern Operators --- )
 :: ALT_TAG 31337 ;
+:: SWING_TAG 31338 ;
 :: cycle-cell 8 alloc ;
 
 : fast ( pat n -- pat' )
@@ -86,12 +188,56 @@ struct: Event
   qnil ALT_TAG qpush swap qpush
 ;
 
+: slow-group ( pat n -- grouped-pat )
+  [ | pat n |
+    qnil
+    0 n [ | g |
+      qnil
+      0 pat qlen n / [ | e |
+        g pat qlen n / * e + pat swap qnth
+        qpush
+        e 1 +
+      ] dotimes
+      drop
+      qpush
+      g 1 +
+    ] dotimes
+    drop
+  ] do
+;
+: slow ( pat n -- pat', stretch pattern over n cycles )
+  over qlen over <= [
+    drop
+  ] [
+    slow-group
+  ] ifte
+  alt
+;
+
 : is-alt? ( q -- flag )
   dup qlen 2 = [
     dup 0 qnth ALT_TAG = nip
   ] [
     drop 0
   ] ifte
+;
+
+: swing ( pat pct -- pat', pct: 50=straight 67=triplet )
+  qnil SWING_TAG qpush swap qpush swap qpush
+;
+
+: is-swing? ( q -- flag )
+  dup qlen 3 = [
+    dup 0 qnth SWING_TAG = nip
+  ] [
+    drop 0
+  ] ifte
+;
+
+: resolve-alt ( pat -- pat', resolve alt if tagged, otherwise pass through )
+  dup is-alt? [
+    1 qnth cycle-cell @64 over qlen over over / swap * - qnth
+  ] then
 ;
 
 : is-pair? ( q -- flag, true if [note inst] pair )
@@ -128,8 +274,72 @@ struct: Event
     1 qnth s-inst-cell @64 s
     qnil ALT_TAG qpush swap qpush
   ] [
+  dup is-swing? [
+    dup 1 qnth swap 2 qnth s-inst-cell @64 s
+    swap swing
+  ] [
     s-bind
-  ] ifte
+  ] ifte ] ifte
+;
+
+:: transpose-n-cell 8 alloc ;
+: transpose-walk ( pat -- pat' )
+  [ | pat |
+    qnil
+    0 pat qlen [
+      pat over qnth
+      dup int? [
+        transpose-n-cell @64 +
+      ] [
+        dup word? [
+        ] [
+          transpose-n-cell @64 transpose
+        ] ifte
+      ] ifte
+      rot swap qpush swap
+      1+
+    ] dotimes
+    drop
+  ] do
+;
+: transpose ( pat n -- pat' )
+  transpose-n-cell !64
+  dup is-alt? [
+    1 qnth transpose-n-cell @64 transpose
+    qnil ALT_TAG qpush swap qpush
+  ] [
+  dup is-swing? [
+    dup 1 qnth swap 2 qnth transpose-n-cell @64 transpose
+    swap swing
+  ] [
+    transpose-walk
+  ] ifte ] ifte
+;
+: oct ( pat n -- pat' ) 12 * transpose ;
+
+( --- Swing Timing Helpers --- )
+: swung-start ( start dur n i pct -- fstart )
+  i>f 100.0 f/
+  [ | start dur n i sw |
+    dur 2.0 f* n i>f f/
+    dup i 2 / i>f f* start f+
+    i 1 & 0 != [
+      swap dup sw f* rot f+
+    ] then
+    nip
+  ] do
+;
+
+: swung-dur ( dur n i pct -- fdur )
+  i>f 100.0 f/
+  [ | dur n i sw |
+    dur 2.0 f* n i>f f/
+    i 1 & 0 = [
+      sw f*
+    ] [
+      1.0 sw f- f*
+    ] ifte
+  ] do
 ;
 
 ( --- Timing --- )
@@ -176,6 +386,10 @@ struct: Event
             1 qnth cycle-cell @64 over qlen over over / swap * - qnth
             -rot emit-events
           ] [
+          dup is-swing? [
+            dup 1 qnth swing-pct-cell !64
+            2 qnth resolve-alt -rot emit-swung
+          ] [
           dup is-pair? [
             dup 0 qnth midi2hz
             swap 1 qnth
@@ -198,6 +412,7 @@ struct: Event
               -rot emit-events
             ] ifte
           ] ifte
+          ] ifte
         ] ifte
         ] ifte
       ] ifte
@@ -207,7 +422,7 @@ struct: Event
   ] do
 ;
 
-: emit-events ( pat start dur -- )
+: emit-events-impl ( pat start dur -- )
   [ | pat start dur |
     0
     pat qlen [ | i |
@@ -236,12 +451,14 @@ struct: Event
           drop
         ] [
           dup is-alt? [
-            ( alt: pick one element based on cycle number )
             1 qnth cycle-cell @64 over qlen over over / swap * - qnth
             -rot emit-events
           ] [
+          dup is-swing? [
+            dup 1 qnth swing-pct-cell !64
+            2 qnth resolve-alt -rot emit-swung
+          ] [
           dup is-pair? [
-            ( slot-start sub-dur [note inst] → combined event )
             dup 0 qnth midi2hz
             swap 1 qnth
             voice-idx-cell @64 dup 1 + voice-idx-cell !64 voice
@@ -252,7 +469,81 @@ struct: Event
             1.0 swap Event.gain!
             drop
           ] [
-            ( chord detection: [[ a b ]] parses as [ [a b] ] — qlen=1 wrapper )
+            dup qlen 1 = [
+              dup 0 qnth-type 4 = [
+                0 qnth -rot emit-chord
+              ] [
+                -rot emit-events
+              ] ifte
+            ] [
+              -rot emit-events
+            ] ifte
+          ] ifte
+          ] ifte
+          ] ifte
+        ] ifte
+      ] ifte
+      i 1 +
+    ] dotimes
+    drop
+  ] do
+;
+
+( emit-events: chord-wrapper-aware dispatch )
+: emit-events ( pat start dur -- )
+  rot dup qlen 1 = [
+    dup 0 qnth-type 4 = [
+      0 qnth -rot emit-chord
+    ] [
+      -rot emit-events-impl
+    ] ifte
+  ] [
+    -rot emit-events-impl
+  ] ifte
+;
+
+:: swing-pct-cell 8 alloc ;
+: emit-swung ( pat start dur -- , emit with swing from swing-pct-cell )
+  [ | pat start dur |
+    0
+    pat qlen [ | i |
+      pat i qnth
+      start dur pat qlen i swing-pct-cell @64 swung-start
+      dur pat qlen i swing-pct-cell @64 swung-dur
+      rot dup word? [
+        voice-idx-cell @64 dup 1 + voice-idx-cell !64 voice
+        Event.inst!
+        rot cycle>sec swap Event.start!
+        swap cycle>sec swap Event.dur!
+        440.0 swap Event.freq!
+        1.0 swap Event.gain!
+        drop
+      ] [
+        dup int? [
+          midi2hz
+          voice-idx-cell @64 dup 1 + voice-idx-cell !64 voice
+          0 swap Event.inst!
+          Event.freq!
+          rot cycle>sec swap Event.start!
+          swap cycle>sec swap Event.dur!
+          1.0 swap Event.gain!
+          drop
+        ] [
+          dup is-alt? [
+            1 qnth cycle-cell @64 over qlen over over / swap * - qnth
+            -rot emit-events
+          ] [
+          dup is-pair? [
+            dup 0 qnth midi2hz
+            swap 1 qnth
+            voice-idx-cell @64 dup 1 + voice-idx-cell !64 voice
+            Event.inst!
+            Event.freq!
+            rot cycle>sec swap Event.start!
+            swap cycle>sec swap Event.dur!
+            1.0 swap Event.gain!
+            drop
+          ] [
             dup qlen 1 = [
               dup 0 qnth-type 4 = [
                 0 qnth -rot emit-chord
@@ -277,6 +568,7 @@ struct: Event
 ;
 
 : eval-pattern ( cycle -- )
+  vs-clear
   dup cycle-cell !64
   scene-pat-cell @64
   dup qempty? [ drop drop 0 num-active-voices !64 ] [
@@ -285,6 +577,10 @@ struct: Event
     dup is-alt? [
       1 qnth cycle-cell @64 over qlen over over / swap * - qnth
       swap i>f 1.0 emit-events
+    ] [
+    dup is-swing? [
+      dup 1 qnth swing-pct-cell !64
+      2 qnth resolve-alt swap i>f 1.0 emit-swung
     ] [
     ( detect stack/chord wrapper: qlen=1 and inner is quote → emit-chord )
     dup qlen 1 = [
@@ -296,7 +592,7 @@ struct: Event
     ] [
       swap i>f 1.0 emit-events
     ] ifte
-    ] ifte
+    ] ifte ] ifte
     voice-idx-cell @64 num-active-voices !64
   ] ifte
 ;
@@ -328,6 +624,7 @@ struct: Event
       dup sec>cycle f>i
       dup last-cycle-cell @64 != [
         dup last-cycle-cell !64
+        gc refresh-scene
         eval-pattern
       ] [ drop ] ifte
 
