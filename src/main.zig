@@ -1699,7 +1699,7 @@ const Fy = struct {
                 .Quote => {
                     var q = fy.heap.getQuote(v);
                     if (q.cached_ptr) |p| return makeInt(@as(i64, @intCast(p)));
-                    const code = fy.compileQuote(q) catch runtimeError("compile quote failed");
+                    const code = fy.compileQuote(q) catch |e| runtimeErrorFmt("failed to compile quote: {}", .{e});
                     const ptr: usize = @intFromPtr((fy.jit(code) catch runtimeError("jit failed")).call);
                     // Re-obtain pointer: compileQuote may have grown the heap entries,
                     // invalidating the old `q` pointer.
@@ -4521,7 +4521,7 @@ const Fy = struct {
                             c.resetQuoteTracking();
                             try c.emitWord(wd);
                         }
-                    } else return Compiler.Error.UnknownWord;
+                    } else runtimeErrorFmt("unknown word '{s}' in quote", .{w});
                 }
             },
             .String => |s| {
@@ -4718,6 +4718,16 @@ fn runtimeError(comptime msg: []const u8) noreturn {
     @setCold(true);
     const w = std.io.getStdErr().writer();
     w.print("fy: {s}\n", .{msg}) catch {};
+    if (fy_global) |fy| {
+        printFyTrace(fy, @frameAddress());
+    }
+    std.posix.exit(1);
+}
+
+fn runtimeErrorFmt(comptime fmt: []const u8, args: anytype) noreturn {
+    @setCold(true);
+    const w = std.io.getStdErr().writer();
+    w.print("fy: " ++ fmt ++ "\n", args) catch {};
     if (fy_global) |fy| {
         printFyTrace(fy, @frameAddress());
     }
