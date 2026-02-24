@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 let statusBarItem: vscode.StatusBarItem;
+let diagnostics: vscode.DiagnosticCollection;
 
 const themeColorVar = 'var(--vscode-editor-wordHighlightBackground)';
 const flashSteps = [
@@ -43,6 +44,18 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.StatusBarAlignment.Left, 0
     );
     context.subscriptions.push(statusBarItem);
+
+    diagnostics = vscode.languages.createDiagnosticCollection('fy');
+    context.subscriptions.push(diagnostics);
+
+    // Clear diagnostics when the user edits the file
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeTextDocument(e => {
+            if (e.document.languageId === 'fy' && e.contentChanges.length > 0) {
+                diagnostics.delete(e.document.uri);
+            }
+        })
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('fy.evalDefinition', evalDefinition)
@@ -191,13 +204,33 @@ async function evalDefinition() {
     try {
         const response = await sendToFy(port, filePath, result.text);
         if (response.startsWith('ok')) {
+            diagnostics.delete(editor.document.uri);
             const nameMatch = result.text.match(/^(?::|::|macro:)\s+(\S+)/);
             const wordName = nameMatch ? nameMatch[1] : 'definition';
             statusBarItem.text = `$(check) fy: ${wordName}`;
             vscode.window.setStatusBarMessage(`fy: ${wordName} updated`, 3000);
         } else {
-            statusBarItem.text = '$(error) fy: error';
-            vscode.window.showErrorMessage(`fy: ${response}`);
+            // Parse structured error: "error:{line}:{message}"
+            const errMatch = response.match(/^error:(\d+):(.+)/);
+            if (errMatch) {
+                const errLine = parseInt(errMatch[1], 10);
+                const errMsg = errMatch[2];
+                // errLine is relative to the sent code; map to document position
+                const docLine = Math.min(
+                    result.range.start.line + errLine - 1,
+                    editor.document.lineCount - 1
+                );
+                const lineText = editor.document.lineAt(docLine).text;
+                const diagRange = new vscode.Range(docLine, 0, docLine, lineText.length);
+                const diag = new vscode.Diagnostic(diagRange, errMsg, vscode.DiagnosticSeverity.Error);
+                diag.source = 'fy';
+                diagnostics.set(editor.document.uri, [diag]);
+                statusBarItem.text = `$(error) fy: ${errMsg}`;
+            } else {
+                // Legacy format or unexpected response
+                statusBarItem.text = '$(error) fy: error';
+                vscode.window.showErrorMessage(`fy: ${response}`);
+            }
         }
     } catch (err: any) {
         statusBarItem.text = '$(error) fy: disconnected';

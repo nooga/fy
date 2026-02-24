@@ -2511,6 +2511,22 @@ const Fy = struct {
         lastQuoteCodePos: usize = 0,
         prevQuote: ?Value = null,
         prevQuoteCodePos: usize = 0,
+        // Detailed compile error message for callers (handleConnection, REPL)
+        last_error: [256]u8 = undefined,
+        last_error_len: usize = 0,
+
+        fn setError(self: *Compiler, comptime fmt: []const u8, args: anytype) void {
+            const result = std.fmt.bufPrint(&self.last_error, fmt, args) catch {
+                self.last_error_len = 0;
+                return;
+            };
+            self.last_error_len = result.len;
+        }
+
+        fn lastErrorStr(self: *const Compiler) ?[]const u8 {
+            if (self.last_error_len > 0) return self.last_error[0..self.last_error_len];
+            return null;
+        }
 
         const Relocation = struct {
             code_offset: usize, // index into code[] where BL placeholder lives
@@ -2661,7 +2677,10 @@ const Fy = struct {
                             self.resetQuoteTracking();
                             try self.emitWord(wd);
                         }
-                    } else return Error.UnknownWord;
+                    } else {
+                        self.setError("unknown word '{s}'", .{w});
+                        return Error.UnknownWord;
+                    }
                 },
                 .String => |s| {
                     const v = try self.fy.heap.storeString(s);
@@ -2808,14 +2827,14 @@ const Fy = struct {
                     if (word) |w_val| {
                         try self.emitWord(w_val);
                     } else {
-                        std.debug.print("line {d}: unknown word '{s}'\n", .{ self.parser.line, w });
+                        self.setError("unknown word '{s}'", .{w});
                         return Error.UnknownWord;
                     }
                 },
                 .String => |s| {
                     // Handle string escapes
                     const unescaped = unescapeString(self.fy.fyalloc, s) catch |err| {
-                        std.debug.print("line {d}: string unescape error: {}\n", .{ self.parser.line, err });
+                        self.setError("string unescape error: {}", .{err});
                         return Error.OutOfMemory;
                     };
                     defer self.fy.fyalloc.free(unescaped);
@@ -3062,7 +3081,10 @@ const Fy = struct {
                         is_float_arg[idx] = true;
                         float_reg += 1;
                     },
-                    else => return Error.UnknownWord,
+                    else => {
+                        self.setError("bind: unknown arg type '{c}' in signature", .{arg_type});
+                        return Error.UnknownWord;
+                    },
                 }
             }
 
@@ -3121,6 +3143,7 @@ const Fy = struct {
             } else if (ret_part[0] == 'd') {
                 try self.emit(Asm.@"fmov Xd, Dn"(0, 0));
             } else {
+                self.setError("bind: unknown return type '{c}' in signature", .{ret_part[0]});
                 return Error.UnknownWord;
             }
 
@@ -3169,8 +3192,14 @@ const Fy = struct {
             };
 
             // Look up target word to get its JIT address
-            const word_info = self.fy.userWords.get(word_name) orelse return Error.UnknownWord;
-            const target_addr: u64 = @intCast(word_info.image_addr orelse return Error.UnknownWord);
+            const word_info = self.fy.userWords.get(word_name) orelse {
+                self.setError("callback: unknown word '{s}'", .{word_name});
+                return Error.UnknownWord;
+            };
+            const target_addr: u64 = @intCast(word_info.image_addr orelse {
+                self.setError("callback: word '{s}' has no compiled address", .{word_name});
+                return Error.UnknownWord;
+            });
 
             // Parse signature
             var args_part: []const u8 = "";
@@ -3236,7 +3265,10 @@ const Fy = struct {
                         tramp.append(Asm.@".push Xn"(9)) catch return Error.OutOfMemory;
                         float_reg += 1;
                     },
-                    else => return Error.UnknownWord,
+                    else => {
+                        self.setError("callback: unknown arg type '{c}' in signature", .{arg_type});
+                        return Error.UnknownWord;
+                    },
                 }
             }
 
@@ -3315,7 +3347,7 @@ const Fy = struct {
 
             // Read file
             const file = std.fs.cwd().openFile(file_path, .{}) catch {
-                std.debug.print("line {d}: cannot open file: {s}\n", .{ self.parser.line, file_path });
+                self.setError("cannot open file: {s}", .{file_path});
                 return Error.UnknownWord;
             };
             defer file.close();
@@ -3341,7 +3373,7 @@ const Fy = struct {
             // Compile the file body — definitions go into fy.userWords
             // We compile as .None (no function wrapping) so only definitions matter
             const code = compiler.compile(.None) catch |err| {
-                std.debug.print("error compiling {s} (line {d}): {}\n", .{ file_path, parser.line, err });
+                self.setError("error compiling {s} (line {d}): {}", .{ file_path, parser.line, err });
                 return err;
             };
             // Free the generated code — we only care about side-effects (word definitions)
@@ -3566,7 +3598,7 @@ const Fy = struct {
                 if (std.mem.eql(u8, type_word, ";")) break;
 
                 const field_type = parseFieldType(type_word) orelse {
-                    std.debug.print("line {d}: unknown field type: {s}\n", .{ self.parser.line, type_word });
+                    self.setError("unknown field type: {s}", .{type_word});
                     return Error.UnknownWord;
                 };
 
@@ -4631,6 +4663,9 @@ const Fy = struct {
             //self.image.reset();
             return x;
         } else |err| {
+            if (compiler.lastErrorStr()) |detail| {
+                std.debug.print("line {d}: {s}\n", .{ parser.line, detail });
+            }
             return err;
         }
     }
@@ -4847,8 +4882,12 @@ pub fn repl(allocator: std.mem.Allocator, fy: *Fy) !void {
         var parser2 = Fy.Parser.init(line);
         var compiler2 = Fy.Compiler.init(fy, &parser2);
         const code = compiler2.compile(.SessionRet) catch |err| {
+            if (compiler2.lastErrorStr()) |detail| {
+                try stdout.print("line {d}: {s}\n", .{ parser2.line, detail });
+            } else {
+                try stdout.print("error: {}\n", .{err});
+            }
             compiler2.deinit();
-            try stdout.print("error: {}\n", .{err});
             continue;
         };
         // Resolve BL relocations for user word calls in REPL input
@@ -4977,10 +5016,15 @@ fn handleConnection(fy: *Fy, stream: std.net.Stream) void {
     compiler.base_dir = Fy.Compiler.dirName(file_path);
     defer compiler.deinit();
 
-    const compiled = compiler.compile(.None) catch |err| {
-        var err_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&err_buf, "error: {}\n", .{err}) catch "error: unknown\n";
-        _ = stream.write(msg) catch {};
+    const compiled = compiler.compile(.None) catch {
+        var err_buf: [300]u8 = undefined;
+        if (compiler.lastErrorStr()) |detail| {
+            const msg = std.fmt.bufPrint(&err_buf, "error:{d}:{s}\n", .{ parser.line, detail }) catch "error:0:unknown\n";
+            _ = stream.write(msg) catch {};
+        } else {
+            const msg = std.fmt.bufPrint(&err_buf, "error:{d}:compilation failed\n", .{parser.line}) catch "error:0:unknown\n";
+            _ = stream.write(msg) catch {};
+        }
         return;
     };
     fy.fyalloc.free(compiled);
