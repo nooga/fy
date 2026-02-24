@@ -583,7 +583,7 @@ const Fy = struct {
             const id = Fy.getStrId(v);
             return switch (self.entries.items[id]) {
                 .Quote => |*q| q,
-                else => @panic("expected quote object"),
+                else => runtimeError("expected quote object"),
             };
         }
     };
@@ -696,36 +696,36 @@ const Fy = struct {
         fn quoteConcat(b: Value, a: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             // Ensure both are quotes
-            if (!isStr(a) or !isStr(b)) @panic("cat expects quotes");
-            if (fy.heap.typeOf(a) orelse Heap.ObjType.String != .Quote) @panic("cat expects quote A");
-            if (fy.heap.typeOf(b) orelse Heap.ObjType.String != .Quote) @panic("cat expects quote B");
+            if (!isStr(a) or !isStr(b)) runtimeError("cat expects quotes");
+            if (fy.heap.typeOf(a) orelse Heap.ObjType.String != .Quote) runtimeError("cat expects quote A");
+            if (fy.heap.typeOf(b) orelse Heap.ObjType.String != .Quote) runtimeError("cat expects quote B");
             const qa = fy.heap.getQuote(a);
             const qb = fy.heap.getQuote(b);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            items.ensureTotalCapacity(qa.items.items.len + qb.items.items.len) catch @panic("oom");
+            items.ensureTotalCapacity(qa.items.items.len + qb.items.items.len) catch runtimeError("out of memory");
             // copy items from qa
             for (qa.items.items) |it| switch (it) {
-                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
-                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch runtimeError("out of memory"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
             // copy items from qb
             for (qb.items.items) |it2| switch (it2) {
-                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
-                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch runtimeError("out of memory"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // Quote length: (q -- n)
         fn quoteLen(q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) @panic("qlen expects quote");
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qlen expects quote");
             const qq = fy.heap.getQuote(q);
             return makeInt(@as(i64, @intCast(qq.items.items.len)));
         }
@@ -733,7 +733,7 @@ const Fy = struct {
         // Quote empty? (q -- 1|0)
         fn quoteEmpty(q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) @panic("qempty? expects quote");
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qempty? expects quote");
             const qq = fy.heap.getQuote(q);
             return makeInt(@as(i64, @intFromBool(qq.items.items.len == 0)));
         }
@@ -742,13 +742,13 @@ const Fy = struct {
             return switch (it) {
                 .Number => |n| makeInt(n),
                 .Float => |f| makeFloat(f),
-                .String => |s| fy.heap.storeString(s) catch @panic("store string failed"),
+                .String => |s| fy.heap.storeString(s) catch runtimeError("store string failed"),
                 .Quote => |qv| qv,
                 .Word => |w| blk: {
                     // Wrap single word into a one-item quote
                     var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-                    items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom");
-                    break :blk fy.heap.storeQuote(items) catch @panic("store quote failed");
+                    items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory");
+                    break :blk fy.heap.storeQuote(items) catch runtimeError("store quote failed");
                 },
             };
         }
@@ -756,52 +756,52 @@ const Fy = struct {
         // qhead: (q -- head)
         fn quoteHead(q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) @panic("qhead expects quote");
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qhead expects quote");
             const qq = fy.heap.getQuote(q);
-            if (qq.items.items.len == 0) @panic("qhead of empty quote");
+            if (qq.items.items.len == 0) runtimeError("qhead of empty quote");
             return itemToValue(fy, qq.items.items[0]);
         }
 
         // qtail: (q -- tail)
         fn quoteTail(q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) @panic("qtail expects quote");
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qtail expects quote");
             const qq = fy.heap.getQuote(q);
             if (qq.items.items.len == 0) return q; // tail of empty is empty
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            items.ensureTotalCapacity(qq.items.items.len - 1) catch @panic("oom");
+            items.ensureTotalCapacity(qq.items.items.len - 1) catch runtimeError("out of memory");
             for (qq.items.items[1..]) |it| switch (it) {
-                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
-                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch runtimeError("out of memory"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // qpush: (q x -- q') append element x to quote q
         fn quotePush(x: Value, q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) @panic("qpush expects quote");
+            if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote) runtimeError("qpush expects quote");
             const qq = fy.heap.getQuote(q);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            items.ensureTotalCapacity(qq.items.items.len + 1) catch @panic("oom");
+            items.ensureTotalCapacity(qq.items.items.len + 1) catch runtimeError("out of memory");
             for (qq.items.items) |it| switch (it) {
-                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
-                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch runtimeError("out of memory"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
             // Append x
             if (isInt(x)) {
-                items.append(Heap.Item{ .Number = getInt(x) }) catch @panic("oom");
+                items.append(Heap.Item{ .Number = getInt(x) }) catch runtimeError("out of memory");
             } else {
                 if (fy.heap.typeOf(x)) |t| switch (t) {
                     .String => {
                         const s = fy.heap.getString(x);
-                        items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
+                        items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory");
                     },
                     .Quote => {
                         // Inline single-item quotations only for non-Quote items (e.g. from \word syntax)
@@ -810,26 +810,26 @@ const Fy = struct {
                         if (inner.items.items.len == 1) {
                             const single = inner.items.items[0];
                             switch (single) {
-                                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                                .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch @panic("oom"),
-                                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                                .Quote => items.append(Heap.Item{ .Quote = x }) catch @panic("oom"),
+                                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                                .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch runtimeError("out of memory"),
+                                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                                .Quote => items.append(Heap.Item{ .Quote = x }) catch runtimeError("out of memory"),
                             }
                         } else {
-                            items.append(Heap.Item{ .Quote = x }) catch @panic("oom");
+                            items.append(Heap.Item{ .Quote = x }) catch runtimeError("out of memory");
                         }
                     },
-                } else @panic("qpush: invalid heap value");
+                } else runtimeError("qpush: invalid heap value");
             }
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // qnil: ( -- q) create empty quote
         fn quoteNil() Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // range: ( n -- q ) create quote [0 1 2 ... n-1]
@@ -837,42 +837,42 @@ const Fy = struct {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const count: usize = @intCast(getInt(n));
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            items.ensureTotalCapacity(count) catch @panic("oom");
+            items.ensureTotalCapacity(count) catch runtimeError("out of memory");
             for (0..count) |i| {
-                items.append(Heap.Item{ .Number = @intCast(i) }) catch @panic("oom");
+                items.append(Heap.Item{ .Number = @intCast(i) }) catch runtimeError("out of memory");
             }
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // curry: (val quot -- quot') prepend value to quote
         fn quoteCurry(quot: Value, val: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(quot) or (fy.heap.typeOf(quot) orelse Heap.ObjType.String) != .Quote)
-                @panic("curry expects quote");
+                runtimeError("curry expects quote");
             const qq = fy.heap.getQuote(quot);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
-            items.ensureTotalCapacity(qq.items.items.len + 1) catch @panic("oom");
+            items.ensureTotalCapacity(qq.items.items.len + 1) catch runtimeError("out of memory");
             // Prepend val
             if (isInt(val)) {
-                items.append(Heap.Item{ .Number = getInt(val) }) catch @panic("oom");
+                items.append(Heap.Item{ .Number = getInt(val) }) catch runtimeError("out of memory");
             } else {
                 if (fy.heap.typeOf(val)) |t| switch (t) {
                     .String => {
                         const s = fy.heap.getString(val);
-                        items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
+                        items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory");
                     },
-                    .Quote => items.append(Heap.Item{ .Quote = val }) catch @panic("oom"),
-                } else @panic("curry: invalid value");
+                    .Quote => items.append(Heap.Item{ .Quote = val }) catch runtimeError("out of memory"),
+                } else runtimeError("curry: invalid value");
             }
             // Copy items from quot
             for (qq.items.items) |it| switch (it) {
-                .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                .Float => |f| items.append(Heap.Item{ .Float = f }) catch @panic("oom"),
-                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                .Float => |f| items.append(Heap.Item{ .Float = f }) catch runtimeError("out of memory"),
+                .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
             };
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         fn print(a: Value) void {
@@ -994,8 +994,8 @@ const Fy = struct {
         // value [ [cond1] [body1] [cond2] [body2] ... [default] ] cond
         fn condImpl(cases: Value, value: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(cases)) @panic("cond expects quote");
-            if ((fy.heap.typeOf(cases) orelse Heap.ObjType.String) != .Quote) @panic("cond expects quote");
+            if (!isStr(cases)) runtimeError("cond expects quote");
+            if ((fy.heap.typeOf(cases) orelse Heap.ObjType.String) != .Quote) runtimeError("cond expects quote");
             const q = fy.heap.getQuote(cases);
             const items = q.items.items;
             const adapt = getAdapt1(fy);
@@ -1005,7 +1005,7 @@ const Fy = struct {
                 // Get condition sub-quote
                 const cond_qv = itemToValue(fy, items[i]);
                 const cond_fptr_val = resolveCallable(cond_qv);
-                if (!isInt(cond_fptr_val)) @panic("cond: condition must be callable");
+                if (!isInt(cond_fptr_val)) runtimeError("cond: condition must be callable");
                 const cond_fptr: usize = @intCast(getInt(cond_fptr_val));
 
                 // Call condition with value as arg
@@ -1016,7 +1016,7 @@ const Fy = struct {
                     // Match — call body
                     const body_qv = itemToValue(fy, items[i + 1]);
                     const body_fptr_val = resolveCallable(body_qv);
-                    if (!isInt(body_fptr_val)) @panic("cond: body must be callable");
+                    if (!isInt(body_fptr_val)) runtimeError("cond: body must be callable");
                     const body_fptr: usize = @intCast(getInt(body_fptr_val));
                     return adapt(body_fptr, base, base, makeInt(0));
                 }
@@ -1026,7 +1026,7 @@ const Fy = struct {
             if (items.len % 2 == 1) {
                 const default_qv = itemToValue(fy, items[items.len - 1]);
                 const default_fptr_val = resolveCallable(default_qv);
-                if (!isInt(default_fptr_val)) @panic("cond: default must be callable");
+                if (!isInt(default_fptr_val)) runtimeError("cond: default must be callable");
                 const default_fptr: usize = @intCast(getInt(default_fptr_val));
                 const base: Value = @bitCast(@as(i64, @intCast(fy.tramp_stack_top)));
                 return adapt(default_fptr, base, base, makeInt(0));
@@ -1050,11 +1050,11 @@ const Fy = struct {
         // IO: slurp (path -- string)
         fn slurp(path: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) @panic("slurp expects string path");
+            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("slurp expects string path");
             const p = fy.heap.getString(path);
-            const data = std.fs.cwd().readFileAlloc(fy.fyalloc, p, std.math.maxInt(usize)) catch @panic("slurp failed");
+            const data = std.fs.cwd().readFileAlloc(fy.fyalloc, p, std.math.maxInt(usize)) catch runtimeError("slurp failed");
             // Store as fy string (copies into heap-managed storage)
-            const v = fy.heap.storeString(data) catch @panic("heap store failed");
+            const v = fy.heap.storeString(data) catch runtimeError("heap store failed");
             // Free the temporary buffer allocated by readFileAlloc
             fy.fyalloc.free(data);
             return v;
@@ -1063,16 +1063,16 @@ const Fy = struct {
         // IO: spit (string path -- 0)
         fn spit(path: Value, content: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) @panic("spit expects string path");
+            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("spit expects string path");
             const p = fy.heap.getString(path);
-            var file = std.fs.cwd().createFile(p, .{}) catch @panic("spit: open failed");
+            var file = std.fs.cwd().createFile(p, .{}) catch runtimeError("spit: open failed");
             defer file.close();
             if (isStr(content)) {
-                if ((fy.heap.typeOf(content) orelse Heap.ObjType.String) != .String) @panic("spit expects string content");
+                if ((fy.heap.typeOf(content) orelse Heap.ObjType.String) != .String) runtimeError("spit expects string content");
                 const s = fy.heap.getString(content);
-                _ = file.writeAll(s) catch @panic("spit: write failed");
+                _ = file.writeAll(s) catch runtimeError("spit: write failed");
             } else {
-                @panic("spit expects string content");
+                runtimeError("spit expects string content");
             }
             return makeInt(0);
         }
@@ -1082,12 +1082,12 @@ const Fy = struct {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             var reader = std.io.getStdIn().reader();
             var buf = reader.readUntilDelimiterAlloc(fy.fyalloc, '\n', 64 * 1024) catch |e| switch (e) {
-                error.EndOfStream => fy.fyalloc.alloc(u8, 0) catch @panic("oom"),
-                else => @panic("readln failed"),
+                error.EndOfStream => fy.fyalloc.alloc(u8, 0) catch runtimeError("out of memory"),
+                else => runtimeError("readln failed"),
             };
             // Strip trailing CR if present
             if (buf.len > 0 and buf[buf.len - 1] == '\r') buf = buf[0 .. buf.len - 1];
-            const v = fy.heap.storeString(buf) catch @panic("heap store failed");
+            const v = fy.heap.storeString(buf) catch runtimeError("heap store failed");
             fy.fyalloc.free(buf);
             return v;
         }
@@ -1095,9 +1095,9 @@ const Fy = struct {
         // FFI: dl-open (path -- handle)
         fn dlOpen(path: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) @panic("dl-open expects string path");
+            if (!isStr(path) or (fy.heap.typeOf(path) orelse Heap.ObjType.String) != .String) runtimeError("dl-open expects string path");
             const p = fy.heap.getString(path);
-            const cbuf = allocCStr(fy.fyalloc, p) catch @panic("oom");
+            const cbuf = allocCStr(fy.fyalloc, p) catch runtimeError("out of memory");
             defer fy.fyalloc.free(cbuf);
             const handle = posix_dl.dlopen(@ptrCast(cbuf.ptr), posix_dl.RTLD_NOW);
             if (handle == null) {
@@ -1115,12 +1115,12 @@ const Fy = struct {
         // FFI: dl-sym (handle symbol -- fptr)
         fn dlSym(sym: Value, handle_v: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isInt(handle_v)) @panic("dl-sym expects handle int");
-            if (!isStr(sym) or (fy.heap.typeOf(sym) orelse Heap.ObjType.String) != .String) @panic("dl-sym expects string symbol");
+            if (!isInt(handle_v)) runtimeError("dl-sym expects handle int");
+            if (!isStr(sym) or (fy.heap.typeOf(sym) orelse Heap.ObjType.String) != .String) runtimeError("dl-sym expects string symbol");
             const h: usize = @intCast(getInt(handle_v));
             const p: ?*anyopaque = @ptrFromInt(h);
             const s = fy.heap.getString(sym);
-            const cs = allocCStr(fy.fyalloc, s) catch @panic("oom");
+            const cs = allocCStr(fy.fyalloc, s) catch runtimeError("out of memory");
             defer fy.fyalloc.free(cs);
             const f = posix_dl.dlsym(p, @ptrCast(cs.ptr));
             if (f == null) return makeInt(0);
@@ -1130,7 +1130,7 @@ const Fy = struct {
 
         // FFI: dl-close (handle -- 0)
         fn dlClose(handle_v: Value) Value {
-            if (!isInt(handle_v)) @panic("dl-close expects handle int");
+            if (!isInt(handle_v)) runtimeError("dl-close expects handle int");
             const h: usize = @intCast(getInt(handle_v));
             const p: ?*anyopaque = @ptrFromInt(h);
             _ = posix_dl.dlclose(p);
@@ -1141,11 +1141,11 @@ const Fy = struct {
         // Allocates with libc malloc so it can be freed by cstr-free.
         fn cstrNew(sv: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) @panic("cstr-new expects string");
+            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("cstr-new expects string");
             const s = fy.heap.getString(sv);
             const n: usize = s.len + 1;
             const mem = c_std.malloc(n);
-            if (mem == null) @panic("cstr-new: malloc failed");
+            if (mem == null) runtimeError("cstr-new: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
             @memcpy(p[0..s.len], s);
             p[s.len] = 0;
@@ -1154,7 +1154,7 @@ const Fy = struct {
 
         // FFI helper: cstr-free (ptr -- 0)
         fn cstrFree(ptr_v: Value) Value {
-            if (!isInt(ptr_v)) @panic("cstr-free expects integer pointer");
+            if (!isInt(ptr_v)) runtimeError("cstr-free expects integer pointer");
             const up: usize = @intCast(getInt(ptr_v));
             const mem: ?*anyopaque = @ptrFromInt(up);
             c_std.free(mem);
@@ -1165,7 +1165,7 @@ const Fy = struct {
         fn allocMem(size_v: Value) Value {
             const n: usize = @intCast(@as(u64, @bitCast(size_v)));
             const mem = c_std.malloc(n);
-            if (mem == null) @panic("alloc: malloc failed");
+            if (mem == null) runtimeError("alloc: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
             @memset(p[0..n], 0);
             return makeInt(@as(i64, @intCast(@intFromPtr(mem))));
@@ -1182,11 +1182,11 @@ const Fy = struct {
         // Allocates C string, calls C-style function pointer (usize)->usize with arg ptr, frees, returns result.
         fn withCstr(callable: Value, sv: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) @panic("with-cstr expects string");
+            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr expects string");
             const s = fy.heap.getString(sv);
             const n: usize = s.len + 1;
             const mem = c_std.malloc(n);
-            if (mem == null) @panic("with-cstr: malloc failed");
+            if (mem == null) runtimeError("with-cstr: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
             @memcpy(p[0..s.len], s);
             p[s.len] = 0;
@@ -1194,7 +1194,7 @@ const Fy = struct {
             const fptr_val = resolveCallable(callable);
             if (!isInt(fptr_val)) {
                 c_std.free(mem);
-                @panic("with-cstr: callable did not resolve to pointer");
+                runtimeError("with-cstr: callable did not resolve to pointer");
             }
             const fptr: usize = @intCast(getInt(fptr_val));
             const Fun = *const fn (usize) usize;
@@ -1208,12 +1208,12 @@ const Fy = struct {
         // Like with-cstr-q but supplies both ptr and fptr to the quote running on an isolated trampoline stack.
         fn withCstrF(quote: Value, fptr_val: Value, sv: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) @panic("with-cstr-f expects string");
-            if (!isInt(fptr_val)) @panic("with-cstr-f expects integer function pointer");
+            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr-f expects string");
+            if (!isInt(fptr_val)) runtimeError("with-cstr-f expects integer function pointer");
             const s = fy.heap.getString(sv);
             const n: usize = s.len + 1;
             const mem = c_std.malloc(n);
-            if (mem == null) @panic("with-cstr-f: malloc failed");
+            if (mem == null) runtimeError("with-cstr-f: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
             @memcpy(p[0..s.len], s);
             p[s.len] = 0;
@@ -1221,7 +1221,7 @@ const Fy = struct {
             const qptr_val = resolveCallable(quote);
             if (!isInt(qptr_val)) {
                 c_std.free(mem);
-                @panic("with-cstr-f: quote did not resolve to pointer");
+                runtimeError("with-cstr-f: quote did not resolve to pointer");
             }
             const qptr: usize = @intCast(getInt(qptr_val));
             const fptr: usize = @intCast(getInt(fptr_val));
@@ -1246,11 +1246,11 @@ const Fy = struct {
         // trampoline stack by passing fptr as the "acc" parameter to adapt2 while the head is ptr.
         fn withCstrQ(quote: Value, sv: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) @panic("with-cstr-q expects string");
+            if (!isStr(sv) or (fy.heap.typeOf(sv) orelse Heap.ObjType.String) != .String) runtimeError("with-cstr-q expects string");
             const s = fy.heap.getString(sv);
             const n: usize = s.len + 1;
             const mem = c_std.malloc(n);
-            if (mem == null) @panic("with-cstr-q: malloc failed");
+            if (mem == null) runtimeError("with-cstr-q: malloc failed");
             const p: [*]u8 = @ptrCast(mem);
             @memcpy(p[0..s.len], s);
             p[s.len] = 0;
@@ -1258,7 +1258,7 @@ const Fy = struct {
             const fptr_val = resolveCallable(quote);
             if (!isInt(fptr_val)) {
                 c_std.free(mem);
-                @panic("with-cstr-q: quote did not resolve to pointer");
+                runtimeError("with-cstr-q: quote did not resolve to pointer");
             }
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt2(fy);
@@ -1277,8 +1277,8 @@ const Fy = struct {
         // PAC-safe 1-arg call: (... fptr a -- ret)
         fn ccall1pac(a: Value, fptr: Value) Value {
             // Note: parameter order maps to stack top first; expects a above fptr
-            if ((fptr & TAG_MASK) != TAG_INT) @panic("ccall1pac expects integer function pointer");
-            if ((a & TAG_MASK) != TAG_INT) @panic("ccall1pac expects integer/pointer argument");
+            if ((fptr & TAG_MASK) != TAG_INT) runtimeError("ccall1pac expects integer function pointer");
+            if ((a & TAG_MASK) != TAG_INT) runtimeError("ccall1pac expects integer/pointer argument");
             const faddr: usize = @intCast(getInt(fptr));
             const arg0: usize = @intCast(getInt(a));
             const Fun = *const fn (usize) usize;
@@ -1291,13 +1291,13 @@ const Fy = struct {
         // Due to calling convention, x0 holds top-of-stack (b) and x1 holds next (a)
         fn strConcat(b: Value, a: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            return fy.heap.concat(a, b) catch @panic("String concatenation failed");
+            return fy.heap.concat(a, b) catch runtimeError("string concatenation failed");
         }
 
         // String length
         fn strLen(a: Value) Value {
             if (!isStr(a)) {
-                @panic("Expected string for length");
+                runtimeError("expected string for length");
             }
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             return fy.heap.length(a);
@@ -1308,9 +1308,9 @@ const Fy = struct {
         // fnToWord pops TOS→first param, so: first=val, second=name, third=quote
         fn captureInQuote(captured_val: Value, name_val: Value, quote_val: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(name_val)) @panic("_cap: name must be string");
+            if (!isStr(name_val)) runtimeError("_cap: name must be string");
             const name = fy.heap.getString(name_val);
-            return fy.replaceWordInQuote(quote_val, name, captured_val) catch @panic("_cap: replace failed");
+            return fy.replaceWordInQuote(quote_val, name, captured_val) catch runtimeError("_cap: replace failed");
         }
 
         // String equality (content comparison, not heap ID)
@@ -1330,7 +1330,7 @@ const Fy = struct {
         // Byte at index (s n -- c), returns -1 if out of bounds
         fn strNth(n: Value, s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s)) @panic("snth expects string");
+            if (!isStr(s)) runtimeError("snth expects string");
             const str = fy.heap.getString(s);
             if (n < 0) return makeInt(-1);
             const idx: usize = @intCast(@as(u64, @bitCast(n)));
@@ -1341,28 +1341,28 @@ const Fy = struct {
         // Substring (s start len -- s')
         fn strSub(len_v: Value, start_v: Value, s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s)) @panic("ssub expects string");
+            if (!isStr(s)) runtimeError("ssub expects string");
             const str = fy.heap.getString(s);
-            if (start_v < 0) return fy.heap.storeString("") catch @panic("ssub: store failed");
+            if (start_v < 0) return fy.heap.storeString("") catch runtimeError("ssub: store failed");
             const start: usize = @intCast(@as(u64, @bitCast(start_v)));
             const len: usize = if (len_v < 0) 0 else @intCast(@as(u64, @bitCast(len_v)));
-            if (start >= str.len) return fy.heap.storeString("") catch @panic("ssub: store failed");
+            if (start >= str.len) return fy.heap.storeString("") catch runtimeError("ssub: store failed");
             const end = @min(start + len, str.len);
-            return fy.heap.storeString(str[start..end]) catch @panic("ssub: store failed");
+            return fy.heap.storeString(str[start..end]) catch runtimeError("ssub: store failed");
         }
 
         // Split string into lines (s -- quote)
         fn strLines(s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s)) @panic("slines expects string");
+            if (!isStr(s)) runtimeError("slines expects string");
             const str = fy.heap.getString(s);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
             var start: usize = 0;
             for (str, 0..) |c, i| {
                 if (c == '\n') {
                     const end = if (i > start and str[i - 1] == '\r') i - 1 else i;
-                    const buf = fy.fyalloc.dupe(u8, str[start..end]) catch @panic("oom");
-                    items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                    const buf = fy.fyalloc.dupe(u8, str[start..end]) catch runtimeError("out of memory");
+                    items.append(Heap.Item{ .String = buf }) catch runtimeError("out of memory");
                     start = i + 1;
                 }
             }
@@ -1370,10 +1370,10 @@ const Fy = struct {
             if (start <= str.len) {
                 const tail = str[start..];
                 const trimmed = if (tail.len > 0 and tail[tail.len - 1] == '\r') tail[0 .. tail.len - 1] else tail;
-                const buf = fy.fyalloc.dupe(u8, trimmed) catch @panic("oom");
-                items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                const buf = fy.fyalloc.dupe(u8, trimmed) catch runtimeError("out of memory");
+                items.append(Heap.Item{ .String = buf }) catch runtimeError("out of memory");
             }
-            return fy.heap.storeQuote(items) catch @panic("slines: store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("slines: store failed");
         }
 
         // Find substring (s needle -- idx), -1 if not found
@@ -1412,7 +1412,7 @@ const Fy = struct {
         // Replace all occurrences (s old new -- s')
         fn strReplace(new_v: Value, old_v: Value, s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s) or !isStr(old_v) or !isStr(new_v)) @panic("sreplace expects 3 strings");
+            if (!isStr(s) or !isStr(old_v) or !isStr(new_v)) runtimeError("sreplace expects 3 strings");
             const str = fy.heap.getString(s);
             const old = fy.heap.getString(old_v);
             const new = fy.heap.getString(new_v);
@@ -1430,7 +1430,7 @@ const Fy = struct {
             }
             if (count == 0) return s;
             const new_len = str.len - count * old.len + count * new.len;
-            const buf = fy.fyalloc.alloc(u8, new_len) catch @panic("oom");
+            const buf = fy.fyalloc.alloc(u8, new_len) catch runtimeError("out of memory");
             var src: usize = 0;
             var dst: usize = 0;
             while (src + old.len <= str.len) {
@@ -1449,7 +1449,7 @@ const Fy = struct {
                 dst += 1;
                 src += 1;
             }
-            const v = fy.heap.storeString(buf[0..dst]) catch @panic("store failed");
+            const v = fy.heap.storeString(buf[0..dst]) catch runtimeError("store failed");
             fy.fyalloc.free(buf);
             return v;
         }
@@ -1457,50 +1457,50 @@ const Fy = struct {
         // Trim whitespace (s -- s')
         fn strTrim(s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s)) @panic("strim expects string");
+            if (!isStr(s)) runtimeError("strim expects string");
             const str = fy.heap.getString(s);
             const trimmed = std.mem.trim(u8, str, " \t\r\n");
-            return fy.heap.storeString(trimmed) catch @panic("strim: store failed");
+            return fy.heap.storeString(trimmed) catch runtimeError("strim: store failed");
         }
 
         // Split by delimiter (s delim -- quote)
         fn strSplit(delim: Value, s: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(s) or !isStr(delim)) @panic("ssplit expects 2 strings");
+            if (!isStr(s) or !isStr(delim)) runtimeError("ssplit expects 2 strings");
             const str = fy.heap.getString(s);
             const d = fy.heap.getString(delim);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
             if (d.len == 0) {
                 // split into individual bytes
                 for (str) |c| {
-                    const b = fy.fyalloc.alloc(u8, 1) catch @panic("oom");
+                    const b = fy.fyalloc.alloc(u8, 1) catch runtimeError("out of memory");
                     b[0] = c;
-                    items.append(Heap.Item{ .String = b }) catch @panic("oom");
+                    items.append(Heap.Item{ .String = b }) catch runtimeError("out of memory");
                 }
             } else {
                 var start: usize = 0;
                 while (start <= str.len) {
                     if (std.mem.indexOf(u8, str[start..], d)) |rel_idx| {
                         const seg_end = start + rel_idx;
-                        const buf = fy.fyalloc.dupe(u8, str[start..seg_end]) catch @panic("oom");
-                        items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                        const buf = fy.fyalloc.dupe(u8, str[start..seg_end]) catch runtimeError("out of memory");
+                        items.append(Heap.Item{ .String = buf }) catch runtimeError("out of memory");
                         start = seg_end + d.len;
                     } else {
-                        const buf = fy.fyalloc.dupe(u8, str[start..]) catch @panic("oom");
-                        items.append(Heap.Item{ .String = buf }) catch @panic("oom");
+                        const buf = fy.fyalloc.dupe(u8, str[start..]) catch runtimeError("out of memory");
+                        items.append(Heap.Item{ .String = buf }) catch runtimeError("out of memory");
                         break;
                     }
                 }
             }
-            return fy.heap.storeQuote(items) catch @panic("ssplit: store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("ssplit: store failed");
         }
 
         // Integer to string (n -- s)
         fn intToStr(n: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             var buf: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch @panic("i>s: format failed");
-            return fy.heap.storeString(s) catch @panic("i>s: store failed");
+            const s = std.fmt.bufPrint(&buf, "{d}", .{n}) catch runtimeError("i>s: format failed");
+            return fy.heap.storeString(s) catch runtimeError("i>s: store failed");
         }
 
         // Print string raw, no quotes or newline (s --)
@@ -1522,25 +1522,25 @@ const Fy = struct {
         // List directory entries (path -- quote)
         fn dirList(path: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(path)) @panic("dir-list expects string path");
+            if (!isStr(path)) runtimeError("dir-list expects string path");
             const p = fy.heap.getString(path);
-            var dir = std.fs.cwd().openDir(p, .{ .iterate = true }) catch @panic("dir-list: open failed");
+            var dir = std.fs.cwd().openDir(p, .{ .iterate = true }) catch runtimeError("dir-list: open failed");
             defer dir.close();
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
             var iter = dir.iterate();
-            while (iter.next() catch @panic("dir-list: iterate failed")) |entry| {
-                const name = fy.fyalloc.dupe(u8, entry.name) catch @panic("oom");
-                items.append(Heap.Item{ .String = name }) catch @panic("oom");
+            while (iter.next() catch runtimeError("dir-list: iterate failed")) |entry| {
+                const name = fy.fyalloc.dupe(u8, entry.name) catch runtimeError("out of memory");
+                items.append(Heap.Item{ .String = name }) catch runtimeError("out of memory");
             }
-            return fy.heap.storeQuote(items) catch @panic("dir-list: store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("dir-list: store failed");
         }
 
         // Create directory recursively (path -- 0)
         fn mkdirP(path: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(path)) @panic("mkdir-p expects string path");
+            if (!isStr(path)) runtimeError("mkdir-p expects string path");
             const p = fy.heap.getString(path);
-            std.fs.cwd().makePath(p) catch @panic("mkdir-p failed");
+            std.fs.cwd().makePath(p) catch runtimeError("mkdir-p failed");
             return makeInt(0);
         }
 
@@ -1584,7 +1584,7 @@ const Fy = struct {
             const q = fy.heap.getQuote(a);
             if (q.items.items.len != 1) return makeInt(0);
             switch (q.items.items[0]) {
-                .Word => |w| return fy.heap.storeString(w) catch @panic("word->str: store failed"),
+                .Word => |w| return fy.heap.storeString(w) catch runtimeError("word->str: store failed"),
                 else => return makeInt(0),
             }
         }
@@ -1592,20 +1592,20 @@ const Fy = struct {
         fn quoteNth(n: Value, q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
-                @panic("qnth expects quote");
+                runtimeError("qnth expects quote");
             const qq = fy.heap.getQuote(q);
             const idx: usize = @intCast(getInt(n));
-            if (idx >= qq.items.items.len) @panic("qnth index out of bounds");
+            if (idx >= qq.items.items.len) runtimeError("qnth index out of bounds");
             return itemToValue(fy, qq.items.items[idx]);
         }
 
         fn quoteNthType(n: Value, q: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             if (!isStr(q) or (fy.heap.typeOf(q) orelse Heap.ObjType.String) != .Quote)
-                @panic("qnth-type expects quote");
+                runtimeError("qnth-type expects quote");
             const qq = fy.heap.getQuote(q);
             const idx: usize = @intCast(getInt(n));
-            if (idx >= qq.items.items.len) @panic("qnth-type index out of bounds");
+            if (idx >= qq.items.items.len) runtimeError("qnth-type index out of bounds");
             const tag: i64 = switch (qq.items.items[idx]) {
                 .Number => 0,
                 .Float => 1,
@@ -1699,8 +1699,8 @@ const Fy = struct {
                 .Quote => {
                     var q = fy.heap.getQuote(v);
                     if (q.cached_ptr) |p| return makeInt(@as(i64, @intCast(p)));
-                    const code = fy.compileQuote(q) catch @panic("compile quote failed");
-                    const ptr: usize = @intFromPtr((fy.jit(code) catch @panic("jit failed")).call);
+                    const code = fy.compileQuote(q) catch runtimeError("compile quote failed");
+                    const ptr: usize = @intFromPtr((fy.jit(code) catch runtimeError("jit failed")).call);
                     // Re-obtain pointer: compileQuote may have grown the heap entries,
                     // invalidating the old `q` pointer.
                     q = fy.heap.getQuote(v);
@@ -1741,8 +1741,8 @@ const Fy = struct {
                 Asm.@"ldp x29, x30, [sp], #0x10",
                 Asm.ret,
             };
-            const buf = fy.fyalloc.dupe(u32, code[0..]) catch @panic("oom adapt1");
-            const fnptr = fy.jit(buf) catch @panic("jit adapt1 failed");
+            const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
+            const fnptr = fy.jit(buf) catch runtimeError("jit adapt1 failed");
             const addr: usize = @intFromPtr(fnptr.call);
             const typed: *const fn (usize, Value, Value, Value) Value = @ptrFromInt(addr);
             adapt1 = typed;
@@ -1776,8 +1776,8 @@ const Fy = struct {
                 Asm.@"ldp x29, x30, [sp], #0x10",
                 Asm.ret,
             };
-            const buf = fy.fyalloc.dupe(u32, code[0..]) catch @panic("oom adapt2");
-            const fnptr = fy.jit(buf) catch @panic("jit adapt2 failed");
+            const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
+            const fnptr = fy.jit(buf) catch runtimeError("jit adapt2 failed");
             const addr: usize = @intFromPtr(fnptr.call);
             const typed: *const fn (usize, Value, Value, Value, Value) Value = @ptrFromInt(addr);
             adapt2 = typed;
@@ -1801,8 +1801,8 @@ const Fy = struct {
                 Asm.@"ldp x29, x30, [sp], #0x10",
                 Asm.ret,
             };
-            const buf = fy.fyalloc.dupe(u32, code[0..]) catch @panic("oom adapt1v");
-            const fnptr = fy.jit(buf) catch @panic("jit adapt1v failed");
+            const buf = fy.fyalloc.dupe(u32, code[0..]) catch runtimeError("out of memory");
+            const fnptr = fy.jit(buf) catch runtimeError("jit adapt1v failed");
             const addr: usize = @intFromPtr(fnptr.call);
             const typed: *const fn (usize, Value, Value, Value) void = @ptrFromInt(addr);
             adapt1v = typed;
@@ -1814,9 +1814,9 @@ const Fy = struct {
         // General map: list f -- list' using adapter to call any callable (word or quote)
         fn bmap(f: Value, list: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("map expects quote");
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("map expects quote");
             const fptr_val = resolveCallable(f);
-            if (!isInt(fptr_val)) @panic("map expects callable");
+            if (!isInt(fptr_val)) runtimeError("map expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt1(fy);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
@@ -1842,24 +1842,24 @@ const Fy = struct {
                     if (fy.heap.typeOf(mapped)) |t| switch (t) {
                         .String => {
                             const s = fy.heap.getString(mapped);
-                            items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom");
+                            items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory");
                         },
-                        .Quote => items.append(Heap.Item{ .Quote = mapped }) catch @panic("oom"),
-                    } else @panic("map: invalid heap value");
+                        .Quote => items.append(Heap.Item{ .Quote = mapped }) catch runtimeError("out of memory"),
+                    } else runtimeError("map: invalid heap value");
                 } else {
                     const n: i64 = mapped; // treat any non-heap value as integer payload
-                    items.append(Heap.Item{ .Number = n }) catch @panic("oom");
+                    items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory");
                 }
             }
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // General reduce: acc list f -- result using adapter to call any callable
         fn breduce(f: Value, list: Value, acc0: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("reduce expects quote");
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("reduce expects quote");
             const fptr_val = resolveCallable(f);
-            if (!isInt(fptr_val)) @panic("reduce expects callable");
+            if (!isInt(fptr_val)) runtimeError("reduce expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt2(fy);
             var acc = acc0;
@@ -1886,9 +1886,9 @@ const Fy = struct {
         // each: (list f -- 0) execute f for each element, discard results
         fn beach(f: Value, list: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("each expects quote");
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("each expects quote");
             const fptr_val = resolveCallable(f);
-            if (!isInt(fptr_val)) @panic("each expects callable");
+            if (!isInt(fptr_val)) runtimeError("each expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt1v(fy);
             const q = fy.heap.getQuote(list);
@@ -1904,9 +1904,9 @@ const Fy = struct {
         // filter: (list f -- list') keep elements where f returns non-zero
         fn bfilter(f: Value, list: Value) Value {
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
-            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) @panic("filter expects quote");
+            if (!isStr(list) or (fy.heap.typeOf(list) orelse Heap.ObjType.String) != .Quote) runtimeError("filter expects quote");
             const fptr_val = resolveCallable(f);
-            if (!isInt(fptr_val)) @panic("filter expects callable");
+            if (!isInt(fptr_val)) runtimeError("filter expects callable");
             const fptr: usize = @intCast(getInt(fptr_val));
             const adapt = getAdapt1(fy);
             var items = std.ArrayList(Heap.Item).init(fy.fyalloc);
@@ -1918,45 +1918,45 @@ const Fy = struct {
                 const result = adapt(fptr, base_val, base_val, arg);
                 if (result != 0) {
                     switch (it) {
-                        .Number => |n| items.append(Heap.Item{ .Number = n }) catch @panic("oom"),
-                        .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch @panic("oom"),
-                        .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch @panic("oom") }) catch @panic("oom"),
-                        .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch @panic("oom") }) catch @panic("oom"),
-                        .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch @panic("oom"),
+                        .Number => |n| items.append(Heap.Item{ .Number = n }) catch runtimeError("out of memory"),
+                        .Float => |fl| items.append(Heap.Item{ .Float = fl }) catch runtimeError("out of memory"),
+                        .Word => |w| items.append(Heap.Item{ .Word = fy.fyalloc.dupe(u8, w) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                        .String => |s| items.append(Heap.Item{ .String = fy.fyalloc.dupe(u8, s) catch runtimeError("out of memory") }) catch runtimeError("out of memory"),
+                        .Quote => |qv| items.append(Heap.Item{ .Quote = qv }) catch runtimeError("out of memory"),
                     }
                 }
             }
-            return fy.heap.storeQuote(items) catch @panic("heap store failed");
+            return fy.heap.storeQuote(items) catch runtimeError("heap store failed");
         }
 
         // Compiler primitives for macros (only usable during macro expansion)
         fn emitLit(value: Value) void {
-            if (compilerPtr == 0) @panic("emit-lit: not in macro context");
+            if (compilerPtr == 0) runtimeError("emit-lit: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             const v: u64 = @bitCast(value);
-            compiler.emitNumber(v, 0) catch @panic("emit-lit: emitNumber failed");
-            compiler.emitPush() catch @panic("emit-lit: emitPush failed");
+            compiler.emitNumber(v, 0) catch runtimeError("emit-lit: emitNumber failed");
+            compiler.emitPush() catch runtimeError("emit-lit: emitPush failed");
         }
 
         fn emitWordMacro(name_val: Value) void {
-            if (compilerPtr == 0) @panic("emit-word: not in macro context");
+            if (compilerPtr == 0) runtimeError("emit-word: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             const fy = @as(*Fy, @ptrFromInt(fyPtr));
             const name = fy.heap.getString(name_val);
-            const word = fy.findWord(name) orelse @panic("emit-word: unknown word");
-            compiler.emitWord(word) catch @panic("emit-word: emitWord failed");
+            const word = fy.findWord(name) orelse runtimeError("emit-word: unknown word");
+            compiler.emitWord(word) catch runtimeError("emit-word: emitWord failed");
         }
 
         fn peekQuote() Value {
-            if (compilerPtr == 0) @panic("peek-quote: not in macro context");
+            if (compilerPtr == 0) runtimeError("peek-quote: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
             return compiler.lastQuote orelse makeInt(0);
         }
 
         fn macroUnpush() void {
-            if (compilerPtr == 0) @panic("unpush: not in macro context");
+            if (compilerPtr == 0) runtimeError("unpush: not in macro context");
             const compiler = @as(*Compiler, @ptrFromInt(compilerPtr));
-            if (compiler.lastQuote == null) @panic("unpush: no quote to remove");
+            if (compiler.lastQuote == null) runtimeError("unpush: no quote to remove");
             compiler.code.shrinkRetainingCapacity(compiler.lastQuoteCodePos);
             compiler.resetQuoteTracking();
         }
@@ -2332,6 +2332,7 @@ const Fy = struct {
         code: []const u8,
         pos: usize,
         autoclose: bool,
+        line: usize,
 
         const Token = union(enum) {
             Number: i64,
@@ -2345,6 +2346,7 @@ const Fy = struct {
                 .code = code,
                 .pos = 0,
                 .autoclose = false,
+                .line = 1,
             };
         }
 
@@ -2362,6 +2364,7 @@ const Fy = struct {
                     self.autoclose = false;
                     return Token{ .Word = Word.QUOTE_END };
                 }
+                if (self.code[self.pos] == '\n') self.line += 1;
                 self.pos += 1;
             }
             if (self.pos >= self.code.len) {
@@ -2376,6 +2379,7 @@ const Fy = struct {
                     switch (self.code[self.pos]) {
                         '(' => depth += 1,
                         ')' => depth -= 1,
+                        '\n' => self.line += 1,
                         else => {},
                     }
                     self.pos += 1;
@@ -2424,6 +2428,7 @@ const Fy = struct {
                 self.pos += 1;
                 const strStart = self.pos;
                 while (self.pos < self.code.len and self.code[self.pos] != '"') {
+                    if (self.code[self.pos] == '\n') self.line += 1;
                     if (self.code[self.pos] == '\\') {
                         self.pos += 1;
                     }
@@ -2803,14 +2808,14 @@ const Fy = struct {
                     if (word) |w_val| {
                         try self.emitWord(w_val);
                     } else {
-                        std.debug.print("Unknown word: {s}\n", .{w});
+                        std.debug.print("line {d}: unknown word '{s}'\n", .{ self.parser.line, w });
                         return Error.UnknownWord;
                     }
                 },
                 .String => |s| {
                     // Handle string escapes
                     const unescaped = unescapeString(self.fy.fyalloc, s) catch |err| {
-                        std.debug.print("String unescape error: {}\n", .{err});
+                        std.debug.print("line {d}: string unescape error: {}\n", .{ self.parser.line, err });
                         return Error.OutOfMemory;
                     };
                     defer self.fy.fyalloc.free(unescaped);
@@ -3310,7 +3315,7 @@ const Fy = struct {
 
             // Read file
             const file = std.fs.cwd().openFile(file_path, .{}) catch {
-                std.debug.print("Cannot open file: {s}\n", .{file_path});
+                std.debug.print("line {d}: cannot open file: {s}\n", .{ self.parser.line, file_path });
                 return Error.UnknownWord;
             };
             defer file.close();
@@ -3336,7 +3341,7 @@ const Fy = struct {
             // Compile the file body — definitions go into fy.userWords
             // We compile as .None (no function wrapping) so only definitions matter
             const code = compiler.compile(.None) catch |err| {
-                std.debug.print("Error compiling {s}: {}\n", .{ file_path, err });
+                std.debug.print("error compiling {s} (line {d}): {}\n", .{ file_path, parser.line, err });
                 return err;
             };
             // Free the generated code — we only care about side-effects (word definitions)
@@ -3561,7 +3566,7 @@ const Fy = struct {
                 if (std.mem.eql(u8, type_word, ";")) break;
 
                 const field_type = parseFieldType(type_word) orelse {
-                    std.debug.print("Unknown field type: {s}\n", .{type_word});
+                    std.debug.print("line {d}: unknown field type: {s}\n", .{ self.parser.line, type_word });
                     return Error.UnknownWord;
                 };
 
@@ -3859,10 +3864,10 @@ const Fy = struct {
         fn enter(self: *Compiler) !void {
             // Save frame pointer and link register
             try self.emit(Asm.@"stp x29, x30, [sp, #0x10]!");
+            // Establish frame pointer for stack trace unwinding
+            try self.emit(Asm.@"mov x29, sp");
             // Save callee-saved x21/x22 we use for data stack base/top
             try self.emit(Asm.@"stp x21, x22, [sp, #0x10]!");
-            //try self.emit(Asm.@"mov x29, sp");
-
         }
 
         fn leave(self: *Compiler) !void {
@@ -3877,6 +3882,8 @@ const Fy = struct {
         fn enterPersist(self: *Compiler) !void {
             // Only save frame pointer/link register; preserve x21/x22 across calls
             try self.emit(Asm.@"stp x29, x30, [sp, #0x10]!");
+            // Establish frame pointer for stack trace unwinding
+            try self.emit(Asm.@"mov x29, sp");
         }
 
         fn leavePersist(self: *Compiler) !void {
@@ -4665,6 +4672,145 @@ const Fy = struct {
     }
 };
 
+// --- Runtime error handling infrastructure ---
+
+var fy_global: ?*Fy = null;
+
+/// Resolve a JIT code address to the name of the fy word that contains it.
+/// Linear scan — only called during error reporting, never on hot paths.
+fn resolveAddr(fy: *Fy, addr: usize) ?[]const u8 {
+    var best_name: ?[]const u8 = null;
+    var best_addr: usize = 0;
+    var it = fy.userWords.iterator();
+    while (it.next()) |entry| {
+        const w = entry.value_ptr;
+        if (w.image_addr) |wa| {
+            if (wa <= addr and wa > best_addr) {
+                best_addr = wa;
+                best_name = entry.key_ptr.*;
+            }
+        }
+    }
+    return best_name;
+}
+
+/// Walk the ARM64 frame pointer chain and print fy word names for each
+/// return address that falls within the JIT image.
+fn printFyTrace(fy: *Fy, initial_fp: usize) void {
+    const w = std.io.getStdErr().writer();
+    const image_base = @intFromPtr(fy.image.mem.ptr);
+    const image_top = image_base + fy.image.end;
+    var fp = initial_fp;
+    var depth: usize = 0;
+    while (fp != 0 and depth < 32) : (depth += 1) {
+        // Each frame: [x29=old_fp, x30=return_addr] at fp
+        const saved_fp = @as(*const usize, @ptrFromInt(fp)).*;
+        const saved_lr = @as(*const usize, @ptrFromInt(fp + 8)).*;
+        if (saved_lr >= image_base and saved_lr < image_top) {
+            if (resolveAddr(fy, saved_lr)) |name| {
+                w.print("  in {s}\n", .{name}) catch {};
+            } else {
+                w.print("  at <+0x{x}>\n", .{saved_lr - image_base}) catch {};
+            }
+        }
+        if (saved_fp == 0 or saved_fp == fp) break;
+        fp = saved_fp;
+    }
+}
+
+/// Fatal runtime error with fy stack trace. Replaces @panic for user-facing
+/// errors so messages are always printed (including ReleaseSmall).
+fn runtimeError(comptime msg: []const u8) noreturn {
+    @setCold(true);
+    const w = std.io.getStdErr().writer();
+    w.print("fy: {s}\n", .{msg}) catch {};
+    if (fy_global) |fy| {
+        printFyTrace(fy, @frameAddress());
+    }
+    std.posix.exit(1);
+}
+
+/// macOS ARM64 signal handler — catches SIGSEGV/SIGBUS from JIT code.
+/// Uses a re-entrancy guard since the faulting instruction may re-execute
+/// when the handler returns (before exit takes effect).
+var signal_entered: bool = false;
+
+fn fySignalHandler(_: c_int, info: *const std.posix.siginfo_t, ctx: ?*anyopaque) callconv(.C) void {
+    if (@atomicLoad(bool, &signal_entered, .acquire)) {
+        c_std.abort(); // re-entered — hard abort
+    }
+    @atomicStore(bool, &signal_entered, true, .release);
+
+    const w = std.io.getStdErr().writer();
+    const fault_addr = @intFromPtr(info.addr);
+
+    // Try to diagnose stack overflow/underflow from guard page hits
+    if (fy_global) |fy| {
+        if (fy.data_stack_mem) |mem_ptr| {
+            const page = std.mem.page_size;
+            const base = @intFromPtr(mem_ptr);
+            const usable = Fy.DATA_STACK_PAGES * page;
+            // Bottom guard: [base, base+page)
+            if (fault_addr >= base and fault_addr < base + page) {
+                w.print("fy: data stack overflow\n", .{}) catch {};
+                printTraceFromCtx(fy, ctx);
+                c_std.abort();
+            }
+            // Top guard: [base+page+usable, base+page+usable+page)
+            const top_guard = base + page + usable;
+            if (fault_addr >= top_guard and fault_addr < top_guard + page) {
+                w.print("fy: data stack underflow\n", .{}) catch {};
+                printTraceFromCtx(fy, ctx);
+                c_std.abort();
+            }
+        }
+    }
+
+    w.print("fy: segmentation fault at 0x{x}\n", .{fault_addr}) catch {};
+    if (fy_global) |fy| {
+        printTraceFromCtx(fy, ctx);
+    }
+    c_std.abort();
+}
+
+/// Extract frame pointer from signal ucontext and print fy stack trace.
+/// Uses known macOS ARM64 ucontext_t / mcontext64 offsets.
+fn printTraceFromCtx(fy: *Fy, ctx: ?*anyopaque) void {
+    if (!darwin) return;
+    const uc_bytes: [*]const u8 = @ptrCast(ctx orelse return);
+    // uc_mcontext pointer is at offset 48 in ucontext_t
+    const mctx_ptr: usize = @as(*const usize, @alignCast(@ptrCast(uc_bytes + 48))).*;
+    if (mctx_ptr == 0) return;
+    const mctx: [*]const u8 = @ptrFromInt(mctx_ptr);
+    // In mcontext64: __ss starts at offset 16; __fp at __ss+232, __pc at __ss+256
+    const fp = @as(*const usize, @alignCast(@ptrCast(mctx + 248))).*;
+    const pc = @as(*const usize, @alignCast(@ptrCast(mctx + 272))).*;
+
+    const w = std.io.getStdErr().writer();
+    const image_base = @intFromPtr(fy.image.mem.ptr);
+    const image_top = image_base + fy.image.end;
+    // Show the faulting PC if it's in our image
+    if (pc >= image_base and pc < image_top) {
+        if (resolveAddr(fy, pc)) |name| {
+            w.print("  in {s}\n", .{name}) catch {};
+        } else {
+            w.print("  at <+0x{x}>\n", .{pc - image_base}) catch {};
+        }
+    }
+    // Walk the frame chain from there
+    printFyTrace(fy, fp);
+}
+
+fn installSignalHandler() void {
+    const act = std.posix.Sigaction{
+        .handler = .{ .sigaction = fySignalHandler },
+        .mask = std.posix.empty_sigset,
+        .flags = std.posix.SA.SIGINFO,
+    };
+    std.posix.sigaction(std.posix.SIG.SEGV, &act, null) catch {};
+    std.posix.sigaction(std.posix.SIG.BUS, &act, null) catch {};
+}
+
 pub fn repl(allocator: std.mem.Allocator, fy: *Fy) !void {
     const stdout = std.io.getStdOut().writer();
     var editor = Editor.init(allocator, .{});
@@ -4884,6 +5030,8 @@ pub fn main() !void {
     }
 
     var fy = Fy.init(allocator);
+    fy_global = &fy;
+    installSignalHandler();
     defer {
         if (parsedArgs.serve) {
             _ = c_std.remove(".fy-port");
