@@ -4531,8 +4531,8 @@ const Fy = struct {
                 try c.emitPush();
             },
             .Quote => |qv| {
-                if (locals_len > 0) capture_blk: {
-                    // Check if the nested quote references any of our locals
+                if (locals_len > 0 or quote_captures.len > 0) capture_blk: {
+                    // Check if the nested quote references any of our locals/captures
                     const t = self.heap.typeOf(qv) orelse break :capture_blk;
                     if (t != .Quote) break :capture_blk;
                     const nested_q = self.heap.getQuote(qv);
@@ -4580,23 +4580,17 @@ const Fy = struct {
                         continue;
                     }
 
-                    // Fallback: _cap for multi-level captures (x20 not set by us)
-                    const cap_word = self.findWord("_cap") orelse @panic("_cap builtin not found");
+                    // No local frame; x20 still points to parent's frame.
+                    // Propagate captures with original offsets from our own captures.
+                    for (found_caps.items) |cap| {
+                        // cap.idx == ci (index into quote_captures) since locals_len == 0
+                        const name_copy = self.fyalloc.dupe(u8, cap.name) catch break :capture_blk;
+                        nested_q.captures.append(.{ .name = name_copy, .offset = quote_captures[cap.idx].offset }) catch break :capture_blk;
+                    }
+                    nested_q.cached_ptr = null;
                     c.trackQuote(qv);
                     try c.emitNumber(@as(u64, @bitCast(qv)), 0);
                     try c.emitPush();
-
-                    for (found_caps.items) |cap| {
-                        const name_v = try self.heap.storeString(cap.name);
-                        self.heap.addRoot(Fy.getStrId(name_v));
-                        try c.emitNumber(@as(u64, @bitCast(name_v)), 0);
-                        try c.emitPush();
-                        const off: u32 = @intCast(cap.idx * @sizeOf(Value));
-                        try c.emit(Asm.ldr_sp_x0(off));
-                        try c.emitPush();
-                        c.resetQuoteTracking();
-                        try c.emitWord(cap_word);
-                    }
                     continue;
                 }
                 c.trackQuote(qv);
