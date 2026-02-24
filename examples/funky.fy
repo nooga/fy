@@ -166,6 +166,23 @@ struct: Event
   ] do
 ;
 
+: ms20 ( sample cutoff reso ev slot -- filtered, uses 2 slots )
+  [ | x fc reso ev s |
+    TWO_PI fc f* SAMPLE_RATE f/
+    dup 1.0 f+ f/
+    ev s 1 + vs@
+    [ | alpha fb |
+      x fb reso 2.0 f* f* f- libm:tanh
+      ev s vs@ [ | inp p1 |
+        p1 alpha inp p1 f- f* f+
+      ] do dup ev s vs!
+      ev s 1 + vs@ [ | s1 p2 |
+        p2 alpha s1 p2 f- f* f+
+      ] do dup ev s 1 + vs!
+    ] do
+  ] do
+;
+
 ( --- Scene --- )
 :: scene-word-cell 8 alloc ;
 :: scene-pat-cell 8 alloc ;
@@ -649,7 +666,6 @@ struct: AudioStream
 
 : debug-funky ( scene-word -- , print events for cycle 0 without audio )
   scene-word-cell !64
-  120 bpm
   refresh-scene
   0 eval-pattern
   "--- " . num-active-voices @64 . " voices ---" . .nl
@@ -669,7 +685,6 @@ struct: AudioStream
 
 : play-funky ( scene-word -- )
   scene-word-cell !64
-  120 bpm
   0.0 global-time!
   -1 last-cycle-cell !64
   refresh-scene

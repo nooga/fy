@@ -1,5 +1,7 @@
 include "funky.fy"
 
+( --- DSP code ---)
+
 ( 808 bass drum )
 : bd ( ev t -- sample )
   [ | ev t |
@@ -116,29 +118,31 @@ include "funky.fy"
   ] do
 ;
 
+( --- Sequencing --- )
+
 120 bpm
 
 : scene
   ( drums )
   [  \bd [\hh \hh] [[\sn \clap]] [\hh [[\bd \hh]]] 
-     [[\bd \hh]] [\hh \clap] [[\sn \clap]] [\hh  \oh] 
-  ] 
+     [[\bd \hh]] [\hh ] [[\sn ]] [\hh  \oh] 
+  ]  
 
   ( bass )
-  [ 36 \~ [36 48] \~ 39 \~ 43 [46 \~]
+  (  [ 36 \~ [36 48] \~ 39 \~ 43 [46 \~]
     36 \~ [36 48] 36 39 41 43 [48 36]
   ] 2 slow \bass s
-  stack
+  stack  )
 
   ( pad )
-  [ [[ 63 67 70 74 ]]
+  (  [ [[ 63 67 70 74 ]]
     [[ 68 72 75 79 ]]
   ] 2 slow \pad s
-  stack
+  stack  )
 
   ( arp )
-  [ [ 63 67 70 74 ] [ 68 72 75 79 ] ] 2 fast \lead s
-  stack
+  (  [ [ 63 67 70 74 ] [ 68 72 75 79 ] ] 2 fast \lead s
+  stack  )
 ;
 
 \scene play-funky
