@@ -110,33 +110,8 @@ pub fn build(b: *std.Build) void {
     const gen_ffi_step = b.step("gen-ffi", "Run FFI binding generator");
     gen_ffi_step.dependOn(&run_gen_ffi.step);
 
-    // jit69 helper
-    const jit69 = b.addExecutable(.{
-        .name = "jit69",
-        .root_source_file = b.path("src/jit69.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    b.installArtifact(jit69);
-
-    const run_jit69 = b.addRunArtifact(jit69);
-    run_jit69.step.dependOn(b.getInstallStep());
-    const jit69_step = b.step("run-jit69", "Run minimal JIT 69 test");
-    jit69_step.dependOn(&run_jit69.step);
-
-    // Codesign JIT helpers and main exe on macOS
+    // Codesign main exe on macOS
     if (builtin.os.tag == .macos) {
-        // Sign the emitted jit69 (useful if running from cache)
-        const sign_jit69 = b.addSystemCommand(&[_][]const u8{
-            "codesign", "-s", codesign_id, "--force", "--entitlements", "entitlements.plist", "--options", "runtime",
-        });
-        sign_jit69.addFileArg(jit69.getEmittedBin());
-        sign_jit69.step.dependOn(&jit69.step);
-        run_jit69.step.dependOn(&sign_jit69.step);
-
-        // Ensure installing artifacts happens after signing emitted jit69
-        b.getInstallStep().dependOn(&sign_jit69.step);
-
         const sign_exe = b.addSystemCommand(&[_][]const u8{
             "codesign", "-s", codesign_id, "--force", "--entitlements", "entitlements.plist", "--options", "runtime",
         });
@@ -148,7 +123,7 @@ pub fn build(b: *std.Build) void {
         b.getInstallStep().dependOn(&sign_exe.step);
 
         // Expose an explicit step to install and sign artifacts
-        const install_signed = b.step("install-signed", "Install and sign fy/jit69 with entitlements");
+        const install_signed = b.step("install-signed", "Install and sign fy with entitlements");
         install_signed.dependOn(b.getInstallStep());
     }
 }

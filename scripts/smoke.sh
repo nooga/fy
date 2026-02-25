@@ -41,7 +41,7 @@ TO=${TIMEOUT_SECS:-5}
 EXIT_ONLY="ffi_dlopen_close ffi_getpid"
 
 # Known failing tests — listed so they don't cause overall failure
-KNOWN_FAIL="ffi_c_abs ffi_c_strlen ffi_cstr_free_strlen ffi_strlen_pac ffi_with_cstr_f_strlen ffi_with_cstr_q_puts ffi_with_cstr_q_strlen locals_nested_shadow"
+KNOWN_FAIL="ffi_strlen_pac ffi_with_cstr_q_puts ffi_with_cstr_q_strlen locals_nested_shadow"
 
 for f in examples/golden/*.fy; do
   name=$(basename "$f" .fy)
